@@ -14,7 +14,24 @@ const app = express();
 // Database
 connectDB();
 
-app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173', credentials: true }));
+// CORS: allow the main client URL + any Vercel preview deployment for the project
+const allowedOrigins = [
+  process.env.CLIENT_URL || 'http://localhost:5173',
+  'http://localhost:5173',
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (e.g. server-to-server, curl)
+    if (!origin) return callback(null, true);
+    // Allow exact matches
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Allow any Vercel preview URL for this project
+    if (/^https:\/\/lms-.*\.vercel\.app$/.test(origin)) return callback(null, true);
+    if (/^https:\/\/.*perfectneighbourhoodllp-oss-projects\.vercel\.app$/.test(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+}));
 
 // ─── CRITICAL: Webhook raw body capture MUST come before express.json() ───────
 // Meta signature verification requires the raw Buffer — express.json() destroys it.
