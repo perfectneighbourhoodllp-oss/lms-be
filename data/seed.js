@@ -12,9 +12,9 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/realestate
 
 const users = [
   { name: 'Admin User', email: 'admin@perfectneighbourhood.com', password: 'password123', role: 'admin' },
-  { name: 'Manager Maya', email: 'manager@recrm.com', password: 'password123', role: 'manager' },
-  { name: 'Sales Raj', email: 'raj@recrm.com', password: 'password123', role: 'sales' },
-  { name: 'Sales Priya', email: 'priya@recrm.com', password: 'password123', role: 'sales' },
+  { name: 'Manager Sunil', email: 'sunilpandey@perfectneighbourhood.com', password: 'password123', role: 'manager' },
+  { name: 'Manager Arun', email: 'arun@perfectneighbourhood.com', password: 'password123', role: 'manager' },
+  { name: 'Manager Naresh', email: 'naresh@perfectneighbourhood.com', password: 'password123', role: 'manager' },
 ];
 
 const leadTemplates = [
@@ -62,17 +62,17 @@ async function seed() {
 
   const followUpDates = [today, yesterday, tomorrow, twoDaysAgo, today, yesterday, null, tomorrow];
 
-  for (let i = 0; i < leadTemplates.length; i++) {
-    const tpl = leadTemplates[i];
-    const assigned = salesUsers[i % salesUsers.length];
-    await Lead.create({
-      ...tpl,
-      followUpDate: followUpDates[i],
-      assignedTo: assigned._id,
-      createdBy: admin._id,
-    });
-    console.log(`Created lead: ${tpl.name}`);
-  }
+  // for (let i = 0; i < leadTemplates.length; i++) {
+  //   const tpl = leadTemplates[i];
+  //   const assigned = salesUsers[i % salesUsers.length];
+  //   await Lead.create({
+  //     ...tpl,
+  //     followUpDate: followUpDates[i],
+  //     assignedTo: assigned._id,
+  //     createdBy: admin._id,
+  //   });
+  //   console.log(`Created lead: ${tpl.name}`);
+  // }
 
   console.log('\n✅ Seed complete!');
   console.log('─'.repeat(40));

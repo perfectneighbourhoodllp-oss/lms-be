@@ -32,10 +32,19 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/realestate
   let updated = 0;
   let unchanged = 0;
   let conflicts = 0;
+  let invalid = 0;
   let errors = 0;
 
   for (const lead of leads) {
     const canonical = cleanPhone(lead.phone);
+
+    // If cleanPhone rejected the phone (invalid format), don't corrupt the DB.
+    // Leave the existing phone as-is and log for manual review.
+    if (!canonical) {
+      invalid++;
+      console.warn(`[INVALID] Lead ${lead._id} has unparseable phone "${lead.phone}" — left unchanged. Review manually.`);
+      continue;
+    }
 
     if (canonical === lead.phone) {
       unchanged++;
@@ -69,6 +78,7 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/realestate
   console.log('\n─── Backfill Summary ───────────────────');
   console.log(`Updated:    ${updated}`);
   console.log(`Unchanged:  ${unchanged}`);
+  console.log(`Invalid:    ${invalid} (left as-is, review manually)`);
   console.log(`Conflicts:  ${conflicts} (need manual merge)`);
   console.log(`Errors:     ${errors}`);
   console.log('────────────────────────────────────────\n');

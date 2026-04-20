@@ -6,9 +6,10 @@ const STATUSES = ['New', 'Called', 'Interested', 'Site Visit', 'Closed'];
 const leadSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
-    // Stored as digits-only canonical form via utils/cleanPhone:
-    //   Indian numbers: 10 digits, country code "91" stripped
-    //   Other: digits incl. country code (e.g. "15551234567")
+    // Stored in E.164 international format via utils/cleanPhone (libphonenumber-js).
+    //   Indian numbers: "+919876543210"
+    //   Other countries: "+971552268400", "+15551234567", etc.
+    // Invalid input (e.g. "12345") returns empty string and rejects creation.
     phone: { type: String, required: true, trim: true },
     email: { type: String, trim: true, lowercase: true },
     source: { type: String, enum: SOURCES, default: 'Other' },
