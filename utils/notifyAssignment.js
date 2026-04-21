@@ -13,7 +13,7 @@ const notifyAssignment = async (agentId, lead) => {
     if (!agent || !agent.email || !agent.isActive) return;
 
     const followUp = lead.followUpDate
-      ? new Date(lead.followUpDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+      ? new Date(lead.followUpDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })
       : 'Not set';
 
     const html = `

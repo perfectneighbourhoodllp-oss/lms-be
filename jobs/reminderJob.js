@@ -4,7 +4,7 @@ const User = require('../models/User');
 const transporter = require('../config/email');
 
 const fmt = (date) =>
-  date ? new Date(date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  date ? new Date(date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—';
 
 const buildEmailHtml = (userName, leads) => `
 <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
