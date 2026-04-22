@@ -37,15 +37,21 @@ const buildEmailHtml = (userName, leads) => `
 </div>
 `;
 
-/** Runs daily at 9:00 AM server time */
+/** Runs daily at 9:00 AM IST (Asia/Kolkata) */
 const startReminderJob = () => {
   cron.schedule('0 9 * * *', async () => {
     console.log('[CRON] Running daily follow-up reminder job...');
 
     try {
-      const today = new Date();
-      const start = new Date(today.setHours(0, 0, 0, 0));
-      const end = new Date(today.setHours(23, 59, 59, 999));
+      // Build "today in IST" window — convert to UTC for Mongo query.
+      // IST is UTC+5:30, so start of day IST = 18:30 UTC of previous day.
+      const nowIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+      const y = nowIst.getUTCFullYear();
+      const m = nowIst.getUTCMonth();
+      const d = nowIst.getUTCDate();
+      // 00:00:00 IST = 18:30:00 UTC (previous day)
+      const start = new Date(Date.UTC(y, m, d, 0, 0, 0) - 5.5 * 60 * 60 * 1000);
+      const end = new Date(Date.UTC(y, m, d, 23, 59, 59, 999) - 5.5 * 60 * 60 * 1000);
 
       // Get all active users (sales, managers, admins) with follow-ups today
       const activeUsers = await User.find({ isActive: true }).lean();
@@ -71,7 +77,7 @@ const startReminderJob = () => {
     } catch (err) {
       console.error('[CRON] Reminder job failed:', err.message);
     }
-  });
+  }, { timezone: 'Asia/Kolkata' });
 
   console.log('[CRON] Daily reminder job scheduled at 9:00 AM');
 };
