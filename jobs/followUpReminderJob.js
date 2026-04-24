@@ -54,7 +54,7 @@ const startFollowUpReminderJob = () => {
 
       const leads = await Lead.find({
         followUpDate: { $gte: new Date(now.getTime() - 5 * 60 * 1000), $lte: windowEnd },
-        status: { $ne: 'Closed' },
+        status: { $nin: ['Closed', 'Not Interested', 'Dead'] },
         $or: [
           { followUpNotifiedAt: null },
           { followUpNotifiedAt: { $exists: false } },

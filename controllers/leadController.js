@@ -478,7 +478,7 @@ exports.getOverdueLeads = async (req, res, next) => {
     const filter = {
       ...buildRoleFilter(req.user),
       followUpDate: { $lt: start },
-      status: { $ne: 'Closed' },
+      status: { $nin: ['Closed', 'Not Interested', 'Dead'] },
     };
 
     const leads = await Lead.find(filter)
@@ -506,7 +506,7 @@ exports.getStats = async (req, res, next) => {
     const [total, todayFollowups, overdue, closedMonth, byStatus] = await Promise.all([
       Lead.countDocuments(baseFilter),
       Lead.countDocuments({ ...baseFilter, followUpDate: { $gte: start, $lte: end } }),
-      Lead.countDocuments({ ...baseFilter, followUpDate: { $lt: start }, status: { $ne: 'Closed' } }),
+      Lead.countDocuments({ ...baseFilter, followUpDate: { $lt: start }, status: { $nin: ['Closed', 'Not Interested', 'Dead'] } }),
       Lead.countDocuments({ ...baseFilter, status: 'Closed', updatedAt: { $gte: monthStart } }),
       Lead.aggregate([
         { $match: baseFilter },
@@ -516,6 +516,140 @@ exports.getStats = async (req, res, next) => {
     ]);
 
     res.json({ total, todayFollowups, overdue, closedMonth, byStatus });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ─── CSV Export ──────────────────────────────────────────── */
+
+const csvEscape = (v) => {
+  const s = v == null ? '' : String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+const toCsvRow = (arr) => arr.map(csvEscape).join(',');
+
+const fmtIst = (d) => {
+  if (!d) return '';
+  return new Date(d).toLocaleString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+    timeZone: 'Asia/Kolkata',
+  });
+};
+
+exports.exportLeads = async (req, res, next) => {
+  try {
+    // Same filter logic as getLeads
+    const { status, source, search, assignedTo, project,
+            createdFrom, createdTo, followUpFrom, followUpTo } = req.query;
+    const filter = buildRoleFilter(req.user);
+
+    if (status) filter.status = status;
+    if (source) filter.source = source;
+    if (assignedTo) filter.assignedTo = assignedTo;
+    if (project) filter.project = project;
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
+    if (createdFrom || createdTo) {
+      filter.createdAt = {};
+      if (createdFrom) filter.createdAt.$gte = new Date(createdFrom);
+      if (createdTo) {
+        const end = new Date(createdTo);
+        end.setHours(23, 59, 59, 999);
+        filter.createdAt.$lte = end;
+      }
+    }
+    if (followUpFrom || followUpTo) {
+      filter.followUpDate = {};
+      if (followUpFrom) filter.followUpDate.$gte = new Date(followUpFrom);
+      if (followUpTo) {
+        const end = new Date(followUpTo);
+        end.setHours(23, 59, 59, 999);
+        filter.followUpDate.$lte = end;
+      }
+    }
+
+    const leads = await Lead.find(filter)
+      .populate('assignedTo', 'name email')
+      .populate('project', 'name developer')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Collect all unique custom field keys across matched leads
+    const customKeys = new Set();
+    for (const l of leads) {
+      if (l.customFields && typeof l.customFields === 'object') {
+        for (const k of Object.keys(l.customFields)) customKeys.add(k);
+      }
+    }
+    const customCols = Array.from(customKeys).sort();
+
+    const header = [
+      'Name', 'Phone', 'Email', 'Source', 'Status',
+      'Project', 'Project Developer',
+      'Follow-up Date (IST)', 'Assigned Agent', 'Agent Email',
+      'Notes', 'Remarks',
+      'Created At (IST)', 'Updated At (IST)',
+      ...customCols,
+    ];
+
+    // Concatenate all remarks chronologically with date prefix
+    const joinRemarks = (remarks = []) =>
+      remarks
+        .map((r) => {
+          const when = r.createdAt
+            ? new Date(r.createdAt).toLocaleDateString('en-IN', {
+                day: '2-digit', month: 'short', year: 'numeric',
+                timeZone: 'Asia/Kolkata',
+              })
+            : '';
+          return when ? `[${when}] ${r.text}` : r.text;
+        })
+        .join(' | ');
+
+    const rows = [toCsvRow(header)];
+    for (const l of leads) {
+      const row = [
+        l.name,
+        l.phone,
+        l.email,
+        l.source,
+        l.status,
+        l.project?.name,
+        l.project?.developer,
+        fmtIst(l.followUpDate),
+        l.assignedTo?.name,
+        l.assignedTo?.email,
+        l.notes,
+        joinRemarks(l.remarks),
+        fmtIst(l.createdAt),
+        fmtIst(l.updatedAt),
+        ...customCols.map((k) => l.customFields?.[k] ?? ''),
+      ];
+      rows.push(toCsvRow(row));
+    }
+
+    const csv = rows.join('\r\n');
+    const today = new Date().toISOString().slice(0, 10);
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="leads-${today}.csv"`);
+    // BOM so Excel opens UTF-8 correctly
+    res.send('\uFEFF' + csv);
+
+    logActivity({
+      req,
+      action: 'lead.export',
+      resource: 'lead',
+      details: `Exported ${leads.length} leads as CSV`,
+    });
   } catch (err) {
     next(err);
   }

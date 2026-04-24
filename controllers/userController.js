@@ -52,7 +52,7 @@ exports.getAgentPerformance = async (req, res, next) => {
         {
           $match: {
             followUpDate: { $lt: startOfToday },
-            status: { $ne: 'Closed' },
+            status: { $nin: ['Closed', 'Not Interested', 'Dead'] },
           },
         },
         { $group: { _id: '$assignedTo', count: { $sum: 1 } } },

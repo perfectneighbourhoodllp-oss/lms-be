@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const SOURCES = ['Instagram', 'Ads', 'Referral', 'Walk-in', 'Website', 'Other'];
-const STATUSES = ['New', 'Called', 'Interested', 'Site Visit', 'Closed'];
+const STATUSES = ['New', 'Called', 'Interested', 'Site Visit', 'Closed', 'Not Interested', 'Dead'];
 
 const leadSchema = new mongoose.Schema(
   {
