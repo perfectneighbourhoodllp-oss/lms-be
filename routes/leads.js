@@ -10,6 +10,7 @@ const {
   addRemark,
   getRelatedLeads,
   bulkUpload,
+  bulkDelete,
   getTodayFollowups,
   getOverdueLeads,
   getStats,
@@ -37,6 +38,7 @@ router.get('/export', exportLeads);
 
 router.route('/').get(getLeads).post(createLead);
 router.post('/bulk', authorize('admin', 'manager'), upload.single('file'), bulkUpload);
+router.post('/bulk-delete', authorize('admin'), bulkDelete);
 router.route('/:id')
   .get(getLead)
   .put(updateLead)

@@ -276,6 +276,28 @@ exports.updateLead = async (req, res, next) => {
   }
 };
 
+exports.bulkDelete = async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'ids must be a non-empty array of lead IDs' });
+    }
+
+    const result = await Lead.deleteMany({ _id: { $in: ids } });
+
+    logActivity({
+      req,
+      action: 'lead.bulkDelete',
+      resource: 'lead',
+      details: `Bulk deleted ${result.deletedCount} lead${result.deletedCount !== 1 ? 's' : ''}`,
+    });
+
+    res.json({ deletedCount: result.deletedCount });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.deleteLead = async (req, res, next) => {
   try {
     const lead = await Lead.findByIdAndDelete(req.params.id);
