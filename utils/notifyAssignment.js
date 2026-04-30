@@ -1,13 +1,24 @@
 const User = require('../models/User');
 const transporter = require('../config/email');
+const createNotification = require('./createNotification');
 
 /**
- * Send an email notification to a sales agent when a lead is assigned to them.
+ * Send an email notification + create in-app notification when a lead is assigned.
  * Fires and forgets — errors are logged but never thrown.
  */
-const notifyAssignment = async (agentId, lead) => {
+const notifyAssignment = async (agentId, lead, actorId) => {
   try {
     if (!agentId) return;
+
+    // Create in-app notification (independent of email config)
+    createNotification({
+      userId: agentId,
+      type: 'lead.assigned',
+      title: 'New lead assigned',
+      message: `${lead.name} (${lead.phone}) — ${lead.source || 'Other'}`,
+      relatedLead: lead._id,
+      actorId,
+    });
 
     const agent = await User.findById(agentId).lean();
     if (!agent || !agent.email || !agent.isActive) return;

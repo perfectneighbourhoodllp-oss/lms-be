@@ -4,6 +4,7 @@ const Project = require('../models/Project');
 const notifyAssignment = require('../utils/notifyAssignment');
 const logActivity = require('../utils/logActivity');
 const cleanPhone = require('../utils/cleanPhone');
+const createNotification = require('../utils/createNotification');
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
@@ -204,7 +205,7 @@ exports.createLead = async (req, res, next) => {
     ]);
 
     // Notify the assigned agent (fire-and-forget)
-    notifyAssignment(resolvedAssignee, lead);
+    notifyAssignment(resolvedAssignee, lead, req.user.id);
 
     logActivity({
       req,
@@ -249,7 +250,7 @@ exports.updateLead = async (req, res, next) => {
 
     // Notify if assignedTo changed to a different agent
     if (allowed.assignedTo && String(allowed.assignedTo) !== String(existing.assignedTo)) {
-      notifyAssignment(allowed.assignedTo, lead);
+      notifyAssignment(allowed.assignedTo, lead, req.user.id);
     }
 
     // Build a friendly details string of what changed
@@ -368,6 +369,18 @@ exports.addRemark = async (req, res, next) => {
       details: `Added remark to "${lead.name}": ${text.trim().slice(0, 100)}`,
     });
 
+    // Notify the assigned agent if someone else added the remark
+    if (lead.assignedTo) {
+      createNotification({
+        userId: lead.assignedTo,
+        actorId: req.user.id,
+        type: 'lead.remark',
+        title: `New remark on ${lead.name}`,
+        message: `${req.user.name}: ${text.trim().slice(0, 120)}`,
+        relatedLead: lead._id,
+      });
+    }
+
     // Return the lead with populated remarks
     const updated = await Lead.findById(lead._id)
       .populate('assignedTo', 'name email')
@@ -445,7 +458,7 @@ exports.bulkUpload = async (req, res, next) => {
           updated++;
         } else {
           const newLead = await Lead.create(payload);
-          notifyAssignment(assignee, newLead);
+          notifyAssignment(assignee, newLead, req.user.id);
           added++;
         }
       } catch (rowErr) {

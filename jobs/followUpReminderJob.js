@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const Lead = require('../models/Lead');
 const User = require('../models/User');
 const transporter = require('../config/email');
+const createNotification = require('../utils/createNotification');
 
 const fmtTime = (d) =>
   new Date(d).toLocaleString('en-IN', {
@@ -73,25 +74,36 @@ const startFollowUpReminderJob = () => {
       if (!withTime.length) return;
 
       for (const lead of withTime) {
-        if (!lead.assignedTo || !lead.assignedTo.email || !lead.assignedTo.isActive) continue;
+        if (!lead.assignedTo || !lead.assignedTo.isActive) continue;
 
-        try {
-          await transporter.sendMail({
-            from: process.env.EMAIL_FROM || process.env.MAIL_FROM,
-            to: lead.assignedTo.email,
-            subject: `⏰ Follow-up Reminder: ${lead.name} — PNH Lead MS`,
-            html: buildEmail(lead),
-          });
+        // In-app notification (works regardless of email config)
+        createNotification({
+          userId: lead.assignedTo._id,
+          type: 'lead.followUp',
+          title: `Follow-up due: ${lead.name}`,
+          message: `${lead.phone} — scheduled for ${fmtTime(lead.followUpDate)}`,
+          relatedLead: lead._id,
+        });
 
-          // Mark as notified so we don't send again
-          await Lead.updateOne(
-            { _id: lead._id },
-            { $set: { followUpNotifiedAt: new Date() } }
-          );
+        // Mark as notified so we don't fire again for this same followUpDate
+        await Lead.updateOne(
+          { _id: lead._id },
+          { $set: { followUpNotifiedAt: new Date() } }
+        );
 
-          console.log(`[REMINDER] Follow-up email sent to ${lead.assignedTo.email} for lead ${lead.name}`);
-        } catch (err) {
-          console.error(`[REMINDER] Failed to send reminder for lead ${lead._id}:`, err.message);
+        // Try to send email if SMTP is configured
+        if (lead.assignedTo.email) {
+          try {
+            await transporter.sendMail({
+              from: process.env.EMAIL_FROM || process.env.MAIL_FROM,
+              to: lead.assignedTo.email,
+              subject: `⏰ Follow-up Reminder: ${lead.name} — PNH Lead MS`,
+              html: buildEmail(lead),
+            });
+            console.log(`[REMINDER] Follow-up email sent to ${lead.assignedTo.email} for lead ${lead.name}`);
+          } catch (err) {
+            console.error(`[REMINDER] Failed to send reminder email for lead ${lead._id}:`, err.message);
+          }
         }
       }
     } catch (err) {
