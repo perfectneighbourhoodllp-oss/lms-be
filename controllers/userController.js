@@ -147,6 +147,14 @@ exports.updateUser = async (req, res, next) => {
   try {
     const { name, phone, role, isActive, isAvailable } = req.body;
 
+    // Cannot pause an admin (preserves at least one active admin for fallback ops)
+    if (isAvailable === false) {
+      const target = await User.findById(req.params.id).select('role').lean();
+      if (target?.role === 'admin') {
+        return res.status(403).json({ message: 'Admins cannot be paused' });
+      }
+    }
+
     if (req.user.role === 'manager') {
       // Managers can only edit sales agents — not other managers or admins
       const target = await User.findById(req.params.id);
@@ -154,10 +162,10 @@ exports.updateUser = async (req, res, next) => {
       if (target.role !== 'sales') {
         return res.status(403).json({ message: 'Managers can only edit sales agents' });
       }
-      // Managers cannot change roles — only admins can do that
+      // Managers can't change roles or activate/deactivate (admin-only)
       const user = await User.findByIdAndUpdate(
         req.params.id,
-        { $set: { name, phone, isActive, isAvailable } },
+        { $set: { name, phone, isAvailable } },
         { new: true, runValidators: true }
       ).select('-password');
       if (!user) return res.status(404).json({ message: 'User not found' });
@@ -204,6 +212,17 @@ exports.setMyAvailability = async (req, res, next) => {
     const { isAvailable } = req.body;
     if (typeof isAvailable !== 'boolean') {
       return res.status(400).json({ message: 'isAvailable (boolean) is required' });
+    }
+
+    // Only managers can self-toggle availability.
+    // Admins can't pause themselves (system needs at least one active admin).
+    // Sales agents must be paused by their admin/manager via the Team page.
+    if (req.user.role !== 'manager') {
+      return res.status(403).json({
+        message: req.user.role === 'admin'
+          ? 'Admins cannot pause themselves'
+          : 'Only your admin or manager can pause your availability',
+      });
     }
 
     const user = await User.findByIdAndUpdate(

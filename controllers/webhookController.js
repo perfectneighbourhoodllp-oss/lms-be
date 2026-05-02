@@ -4,9 +4,11 @@ const User = require('../models/User');
 const WebhookLog = require('../models/WebhookLog');
 const MetaMapping = require('../models/MetaMapping');
 const notifyAssignment = require('../utils/notifyAssignment');
+const notifyUnassigned = require('../utils/notifyUnassigned');
 const logActivity = require('../utils/logActivity');
 const cleanPhone = require('../utils/cleanPhone');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
+const Project = require('../models/Project');
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
@@ -181,25 +183,20 @@ const processLeadgenEvent = async (value) => {
   }
 
   // 5. Resolve project + agent assignment
+  // assignedTo may be null (no eligible agent) — that's OK, lead stays unassigned.
+  // createdBy still requires a real user, so always resolve a system user for that.
   const projectId = await resolveProject(page_id, form_id);
-  let assignedTo = null;
+  const assignedTo = projectId ? await resolveProjectAgent(projectId) : null;
 
-  if (projectId) {
-    assignedTo = await resolveProjectAgent(projectId);
-  }
-
-  if (!assignedTo) {
-    assignedTo = await resolveSystemUser().catch((err) => {
-      console.error('[META] Cannot resolve system user:', err.message);
-      return null;
-    });
-  }
-
-  if (!assignedTo) {
+  const createdBy = await resolveSystemUser().catch((err) => {
+    console.error('[META] Cannot resolve system user:', err.message);
+    return null;
+  });
+  if (!createdBy) {
     await WebhookLog.create({
       ...logData,
       status: 'failed',
-      error: 'Could not resolve assignedTo / createdBy user',
+      error: 'Could not resolve a system user for createdBy',
     });
     return;
   }
@@ -247,8 +244,8 @@ const processLeadgenEvent = async (value) => {
       metaAdName: ad_name,
       metaFormId: form_id,
       project: projectId || null,
-      assignedTo,
-      createdBy: assignedTo,
+      assignedTo: assignedTo || null,
+      createdBy,
     });
 
     await WebhookLog.create({
@@ -257,8 +254,13 @@ const processLeadgenEvent = async (value) => {
       lead: lead._id,
     });
 
-    notifyAssignment(assignedTo, lead);
-    console.log(`[META] ✅ New lead created: ${lead._id} (${fields.name} / ${cleanedPhone})`);
+    if (assignedTo) {
+      notifyAssignment(assignedTo, lead);
+    } else {
+      const project = projectId ? await Project.findById(projectId).select('name').lean() : null;
+      notifyUnassigned({ ...lead.toObject(), project });
+    }
+    console.log(`[META] ✅ New lead created: ${lead._id} (${fields.name} / ${cleanedPhone}) — ${assignedTo ? 'assigned' : 'UNASSIGNED'}`);
   } catch (err) {
     await WebhookLog.create({
       ...logData,

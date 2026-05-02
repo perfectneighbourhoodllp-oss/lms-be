@@ -1,6 +1,8 @@
 const Lead = require('../models/Lead');
 const User = require('../models/User');
+const Project = require('../models/Project');
 const notifyAssignment = require('./notifyAssignment');
+const notifyUnassigned = require('./notifyUnassigned');
 const cleanPhone = require('./cleanPhone');
 const resolveProjectAgent = require('./resolveProjectAgent');
 
@@ -70,11 +72,11 @@ const processSheetLead = async (row, sheetConfig) => {
     const validSources = ['Instagram', 'Ads', 'Referral', 'Walk-in', 'Website', 'Other'];
     const resolvedSource = validSources.includes(source) ? source : 'Ads';
 
-    // Resolve agent
-    let assignedTo = await resolveProjectAgent(projectId);
-    if (!assignedTo) {
-      assignedTo = await resolveSystemUser();
-    }
+    // Resolve agent — leave null if no eligible agent on the project.
+    // createdBy still needs a real user (required field), so fall back to system user.
+    const assignedTo = await resolveProjectAgent(projectId);
+    const systemUserId = await resolveSystemUser();
+    const createdBy = assignedTo || systemUserId;
 
     // Duplicate check by phone + project — each (phone, project) is its own lead
     const existing = await Lead.findOne({ phone, project: projectId });
@@ -102,13 +104,18 @@ const processSheetLead = async (row, sheetConfig) => {
       status: 'New',
       notes,
       project: projectId,
-      assignedTo,
-      createdBy: assignedTo,
+      assignedTo: assignedTo || null,
+      createdBy,
       customFields: Object.keys(customFields).length ? customFields : undefined,
     });
 
-    // Notify agent
-    notifyAssignment(assignedTo, lead);
+    if (assignedTo) {
+      notifyAssignment(assignedTo, lead);
+    } else {
+      // No eligible agent — notify all admins/managers so someone can assign manually
+      const project = projectId ? await Project.findById(projectId).select('name').lean() : null;
+      notifyUnassigned({ ...lead.toObject(), project });
+    }
 
     return { status: 'success', lead };
   } catch (err) {

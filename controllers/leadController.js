@@ -5,6 +5,8 @@ const logActivity = require('../utils/logActivity');
 const cleanPhone = require('../utils/cleanPhone');
 const createNotification = require('../utils/createNotification');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
+const notifyUnassigned = require('../utils/notifyUnassigned');
+const Project = require('../models/Project');
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
@@ -32,7 +34,8 @@ exports.getLeads = async (req, res, next) => {
 
     if (status) filter.status = status;
     if (source) filter.source = source;
-    if (assignedTo) filter.assignedTo = assignedTo;
+    if (assignedTo === 'unassigned') filter.assignedTo = null;
+    else if (assignedTo) filter.assignedTo = assignedTo;
     if (project) filter.project = project;
     if (search) {
       filter.$or = [
@@ -124,15 +127,18 @@ exports.createLead = async (req, res, next) => {
 
     // Determine assignee:
     // 1. Explicit assignedTo from body (admin/manager override)
-    // 2. Auto-assign from project's round-robin agent list
-    // 3. Fall back to the creator
+    // 2. Auto-assign from project's round-robin agent list (may return null if all paused)
+    // 3. If no project: fall back to creator
+    // 4. If project but no eligible agent: leave null (admins/managers will be notified)
     let resolvedAssignee = assignedTo || null;
 
     if (!resolvedAssignee && project) {
       resolvedAssignee = await resolveProjectAgent(project);
+      // If still null after trying project agents, intentionally keep null
     }
 
-    if (!resolvedAssignee) {
+    if (!resolvedAssignee && !project) {
+      // No project specified at all → assign to creator (existing behavior)
       resolvedAssignee = req.user.id;
     }
 
@@ -184,8 +190,13 @@ exports.createLead = async (req, res, next) => {
       { path: 'project', select: 'name developer' },
     ]);
 
-    // Notify the assigned agent (fire-and-forget)
-    notifyAssignment(resolvedAssignee, lead, req.user.id);
+    // Notify based on assignment outcome
+    if (resolvedAssignee) {
+      notifyAssignment(resolvedAssignee, lead, req.user.id);
+    } else {
+      // Project exists but had no eligible agent — alert admins/managers
+      notifyUnassigned(populated);
+    }
 
     logActivity({
       req,
@@ -409,11 +420,15 @@ exports.bulkUpload = async (req, res, next) => {
         continue;
       }
 
-      // Resolve assignee for this row
-      let assignee = req.user.id;
+      // Resolve assignee for this row.
+      // - If project specified and has an eligible agent → that agent
+      // - If project specified but no eligible agent → leave null (notify admins/managers)
+      // - If no project → fall back to uploader
+      let assignee = null;
       if (rowProject) {
-        const agentId = await resolveProjectAgent(rowProject);
-        if (agentId) assignee = agentId;
+        assignee = await resolveProjectAgent(rowProject);
+      } else {
+        assignee = req.user.id;
       }
 
       const payload = {
@@ -428,17 +443,22 @@ exports.bulkUpload = async (req, res, next) => {
       };
 
       try {
-        // Dedupe by phone + project — same person on different projects = separate leads
         const existing = await Lead.findOne({ phone, project: rowProject || null });
         if (existing) {
-          await Lead.updateOne(
-            { _id: existing._id },
-            { $set: { name, email: payload.email, source: payload.source, notes: payload.notes, assignedTo: payload.assignedTo } }
-          );
+          // On duplicate: only update assignedTo if we resolved a real agent —
+          // don't overwrite an existing assignment with null
+          const updateSet = { name, email: payload.email, source: payload.source, notes: payload.notes };
+          if (assignee) updateSet.assignedTo = assignee;
+          await Lead.updateOne({ _id: existing._id }, { $set: updateSet });
           updated++;
         } else {
           const newLead = await Lead.create(payload);
-          notifyAssignment(assignee, newLead, req.user.id);
+          if (assignee) {
+            notifyAssignment(assignee, newLead, req.user.id);
+          } else {
+            const project = rowProject ? await Project.findById(rowProject).select('name').lean() : null;
+            notifyUnassigned({ ...newLead.toObject(), project });
+          }
           added++;
         }
       } catch (rowErr) {
@@ -563,7 +583,8 @@ exports.exportLeads = async (req, res, next) => {
 
     if (status) filter.status = status;
     if (source) filter.source = source;
-    if (assignedTo) filter.assignedTo = assignedTo;
+    if (assignedTo === 'unassigned') filter.assignedTo = null;
+    else if (assignedTo) filter.assignedTo = assignedTo;
     if (project) filter.project = project;
     if (search) {
       filter.$or = [
