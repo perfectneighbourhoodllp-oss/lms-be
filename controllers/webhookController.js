@@ -1,12 +1,12 @@
 const https = require('https');
 const Lead = require('../models/Lead');
-const Project = require('../models/Project');
 const User = require('../models/User');
 const WebhookLog = require('../models/WebhookLog');
 const MetaMapping = require('../models/MetaMapping');
 const notifyAssignment = require('../utils/notifyAssignment');
 const logActivity = require('../utils/logActivity');
 const cleanPhone = require('../utils/cleanPhone');
+const resolveProjectAgent = require('../utils/resolveProjectAgent');
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
@@ -75,20 +75,8 @@ const extractFields = (fieldData = []) => {
   return { name, phone, email };
 };
 
-/**
- * Round-robin agent assignment from a project.
- * Identical to leadController logic — atomic findOneAndUpdate.
- */
-const resolveProjectAgent = async (projectId) => {
-  const project = await Project.findOneAndUpdate(
-    { _id: projectId, assignedAgents: { $exists: true, $not: { $size: 0 } } },
-    { $inc: { nextAgentIndex: 1 } },
-    { new: false }
-  );
-  if (!project || !project.assignedAgents.length) return null;
-  const idx = project.nextAgentIndex % project.assignedAgents.length;
-  return project.assignedAgents[idx];
-};
+// Round-robin agent assignment now lives in shared utils/resolveProjectAgent.js
+// (filters by isActive + isAvailable). See top of file for import.
 
 /**
  * Find the user to set as createdBy / assignedTo fallback.

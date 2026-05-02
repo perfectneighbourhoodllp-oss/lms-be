@@ -1,8 +1,11 @@
 const router = require('express').Router();
 const { protect, authorize } = require('../middleware/auth');
-const { getUsers, createUser, updateUser, resetPassword, getAgentPerformance } = require('../controllers/userController');
+const { getUsers, createUser, updateUser, resetPassword, getAgentPerformance, setMyAvailability } = require('../controllers/userController');
 
 router.use(protect);
+
+// Self-service availability toggle (any authenticated user)
+router.put('/me/availability', setMyAvailability);
 
 // Both admin and manager can list and create users
 router.get('/', getUsers);

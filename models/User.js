@@ -9,6 +9,9 @@ const userSchema = new mongoose.Schema(
     role: { type: String, enum: ['admin', 'manager', 'sales'], default: 'sales' },
     phone: { type: String, trim: true },
     isActive: { type: Boolean, default: true },
+    // Self-managed: when false, user is excluded from new lead round-robin
+    // assignment but can still log in and work existing leads.
+    isAvailable: { type: Boolean, default: true },
   },
   { timestamps: true }
 );

@@ -6,7 +6,7 @@ const logActivity = require('../utils/logActivity');
 exports.getUsers = async (req, res, next) => {
   try {
     const users = await User.find()
-      .select('name email role phone isActive createdAt')
+      .select('name email role phone isActive isAvailable createdAt')
       .sort({ role: 1, name: 1 })
       .lean();
 
@@ -142,10 +142,10 @@ exports.createUser = async (req, res, next) => {
   }
 };
 
-/** PUT /api/users/:id — admin updates name, phone, role, isActive */
+/** PUT /api/users/:id — admin updates name, phone, role, isActive, isAvailable */
 exports.updateUser = async (req, res, next) => {
   try {
-    const { name, phone, role, isActive } = req.body;
+    const { name, phone, role, isActive, isAvailable } = req.body;
 
     if (req.user.role === 'manager') {
       // Managers can only edit sales agents — not other managers or admins
@@ -157,7 +157,7 @@ exports.updateUser = async (req, res, next) => {
       // Managers cannot change roles — only admins can do that
       const user = await User.findByIdAndUpdate(
         req.params.id,
-        { $set: { name, phone, isActive } },
+        { $set: { name, phone, isActive, isAvailable } },
         { new: true, runValidators: true }
       ).select('-password');
       if (!user) return res.status(404).json({ message: 'User not found' });
@@ -174,7 +174,7 @@ exports.updateUser = async (req, res, next) => {
     // Admin path — full update including role
     const user = await User.findByIdAndUpdate(
       req.params.id,
-      { $set: { name, phone, role, isActive } },
+      { $set: { name, phone, role, isActive, isAvailable } },
       { new: true, runValidators: true }
     ).select('-password');
 
@@ -186,6 +186,40 @@ exports.updateUser = async (req, res, next) => {
       resource: 'user',
       resourceId: user._id,
       details: `Updated user ${user.name} (${user.email})${role ? ` → role: ${role}` : ''}${isActive === false ? ' — deactivated' : isActive === true ? ' — activated' : ''}`,
+    });
+
+    res.json(user);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PUT /api/users/me/availability — current user toggles their own availability.
+ * When isAvailable=false, they're skipped in project round-robin but can still
+ * log in and work existing leads.
+ */
+exports.setMyAvailability = async (req, res, next) => {
+  try {
+    const { isAvailable } = req.body;
+    if (typeof isAvailable !== 'boolean') {
+      return res.status(400).json({ message: 'isAvailable (boolean) is required' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { $set: { isAvailable } },
+      { new: true }
+    ).select('-password');
+
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    logActivity({
+      req,
+      action: 'user.availability',
+      resource: 'user',
+      resourceId: user._id,
+      details: `${user.name} set availability to ${isAvailable ? 'available' : 'paused'}`,
     });
 
     res.json(user);

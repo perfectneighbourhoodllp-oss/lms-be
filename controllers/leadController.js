@@ -1,10 +1,10 @@
 const { parse } = require('csv-parse/sync');
 const Lead = require('../models/Lead');
-const Project = require('../models/Project');
 const notifyAssignment = require('../utils/notifyAssignment');
 const logActivity = require('../utils/logActivity');
 const cleanPhone = require('../utils/cleanPhone');
 const createNotification = require('../utils/createNotification');
+const resolveProjectAgent = require('../utils/resolveProjectAgent');
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
@@ -20,26 +20,6 @@ const todayRange = () => {
   const end = new Date();
   end.setHours(23, 59, 59, 999);
   return { start, end };
-};
-
-/**
- * Given a project ID, find the next agent to assign using round-robin.
- * Increments nextAgentIndex on the project atomically.
- * Returns the agent ObjectId, or null if no agents are assigned.
- */
-const resolveProjectAgent = async (projectId) => {
-  // Use findOneAndUpdate for atomic increment to avoid race conditions
-  const project = await Project.findOneAndUpdate(
-    { _id: projectId, assignedAgents: { $exists: true, $not: { $size: 0 } } },
-    { $inc: { nextAgentIndex: 1 } },
-    { new: false } // get the document BEFORE increment so we can use current index
-  );
-
-  if (!project || !project.assignedAgents.length) return null;
-
-  // Use modulo so index wraps around the agent list
-  const idx = project.nextAgentIndex % project.assignedAgents.length;
-  return project.assignedAgents[idx];
 };
 
 /* ─── Controllers ─────────────────────────────────────────── */

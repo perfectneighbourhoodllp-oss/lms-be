@@ -1,22 +1,8 @@
 const Lead = require('../models/Lead');
-const Project = require('../models/Project');
 const User = require('../models/User');
 const notifyAssignment = require('./notifyAssignment');
 const cleanPhone = require('./cleanPhone');
-
-/**
- * Round-robin agent assignment from a project (atomic).
- */
-const resolveProjectAgent = async (projectId) => {
-  const project = await Project.findOneAndUpdate(
-    { _id: projectId, assignedAgents: { $exists: true, $not: { $size: 0 } } },
-    { $inc: { nextAgentIndex: 1 } },
-    { new: false }
-  );
-  if (!project || !project.assignedAgents.length) return null;
-  const idx = project.nextAgentIndex % project.assignedAgents.length;
-  return project.assignedAgents[idx];
-};
+const resolveProjectAgent = require('./resolveProjectAgent');
 
 /**
  * Fallback assignee — first active admin.
