@@ -10,6 +10,7 @@ const {
   deleteExpense,
   approveExpense,
   rejectExpense,
+  markAsPaid,
   uploadReceipt: uploadReceiptHandler,
 } = require('../controllers/expenseController');
 
@@ -26,5 +27,6 @@ router.delete('/:id', deleteExpense);
 
 router.post('/:id/approve', authorize('admin'), approveExpense);
 router.post('/:id/reject', authorize('admin'), rejectExpense);
+router.post('/:id/mark-paid', authorize('admin'), markAsPaid);
 
 module.exports = router;

@@ -63,6 +63,7 @@ exports.getExpenses = async (req, res, next) => {
       Expense.find(filter)
         .populate('addedBy', 'name email role')
         .populate('approvedBy', 'name email')
+        .populate('paidBy', 'name email')
         .populate('project', 'name')
         .sort({ date: -1, createdAt: -1 })
         .skip(skip)
@@ -93,19 +94,32 @@ exports.getStats = async (req, res, next) => {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
-    const [monthAggregate, pendingCount, categoryBreakdown, totalAllTime] = await Promise.all([
+    // Approved AND Paid both count as "spent" — once admin approves it's committed money
+    const spentStatuses = { $in: ['Approved', 'Paid'] };
+
+    const [
+      monthAggregate,
+      pendingCount,
+      awaitingPayment,
+      categoryBreakdown,
+      totalAllTime,
+    ] = await Promise.all([
       Expense.aggregate([
-        { $match: { ...financialScope, status: 'Approved', date: { $gte: monthStart, $lte: monthEnd } } },
+        { $match: { ...financialScope, status: spentStatuses, date: { $gte: monthStart, $lte: monthEnd } } },
         { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
       ]),
       Expense.countDocuments({ ...pendingScope, status: 'Pending' }),
       Expense.aggregate([
-        { $match: { ...financialScope, status: 'Approved', date: { $gte: monthStart, $lte: monthEnd } } },
+        { $match: { ...financialScope, status: 'Approved' } },
+        { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+      ]),
+      Expense.aggregate([
+        { $match: { ...financialScope, status: spentStatuses, date: { $gte: monthStart, $lte: monthEnd } } },
         { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
         { $sort: { total: -1 } },
       ]),
       Expense.aggregate([
-        { $match: { ...financialScope, status: 'Approved' } },
+        { $match: { ...financialScope, status: spentStatuses } },
         { $group: { _id: null, total: { $sum: '$amount' } } },
       ]),
     ]);
@@ -114,6 +128,8 @@ exports.getStats = async (req, res, next) => {
       thisMonth: monthAggregate[0]?.total || 0,
       thisMonthCount: monthAggregate[0]?.count || 0,
       pendingCount,
+      awaitingPaymentCount: awaitingPayment[0]?.count || 0,
+      awaitingPaymentTotal: awaitingPayment[0]?.total || 0,
       allTimeTotal: totalAllTime[0]?.total || 0,
       byCategory: categoryBreakdown.map((c) => ({
         category: c._id,
@@ -136,6 +152,7 @@ exports.getExpense = async (req, res, next) => {
     const expense = await Expense.findById(req.params.id)
       .populate('addedBy', 'name email role')
       .populate('approvedBy', 'name email')
+      .populate('paidBy', 'name email')
       .populate('project', 'name');
 
     if (!expense) return res.status(404).json({ message: 'Expense not found' });
@@ -278,6 +295,7 @@ exports.updateExpense = async (req, res, next) => {
     const populated = await Expense.findById(expense._id)
       .populate('addedBy', 'name email role')
       .populate('approvedBy', 'name email')
+      .populate('paidBy', 'name email')
       .populate('project', 'name');
 
     logActivity({
@@ -356,20 +374,19 @@ exports.uploadReceipt = async (req, res, next) => {
 
 /**
  * POST /api/expenses/:id/approve
- * Admin only. Cannot approve own expense.
+ * Admin only. Admin can approve their own expense — self-approvals are clearly
+ * marked in the activity log for audit purposes.
  */
 exports.approveExpense = async (req, res, next) => {
   try {
     const expense = await Expense.findById(req.params.id);
     if (!expense) return res.status(404).json({ message: 'Expense not found' });
 
-    if (String(expense.addedBy) === req.user.id) {
-      return res.status(400).json({ message: 'Cannot approve your own expense' });
-    }
-
     if (expense.status === 'Approved') {
       return res.status(400).json({ message: 'Already approved' });
     }
+
+    const isSelfApproval = String(expense.addedBy) === req.user.id;
 
     expense.status = 'Approved';
     expense.approvedBy = req.user.id;
@@ -380,14 +397,58 @@ exports.approveExpense = async (req, res, next) => {
     const populated = await Expense.findById(expense._id)
       .populate('addedBy', 'name email role')
       .populate('approvedBy', 'name email')
+      .populate('paidBy', 'name email')
       .populate('project', 'name');
 
     logActivity({
       req,
-      action: 'expense.approve',
+      action: isSelfApproval ? 'expense.selfApprove' : 'expense.approve',
       resource: 'expense',
       resourceId: expense._id,
-      details: `Approved ₹${expense.amount} expense by ${populated.addedBy?.name}`,
+      details: `${isSelfApproval ? 'Self-approved' : 'Approved'} ₹${expense.amount} expense${isSelfApproval ? '' : ` by ${populated.addedBy?.name}`}`,
+    });
+
+    res.json(populated);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/expenses/:id/mark-paid
+ * Admin only. The expense must be in Approved state.
+ * Body: { paymentReference?: string } — optional UTR / txn ID
+ */
+exports.markAsPaid = async (req, res, next) => {
+  try {
+    const { paymentReference } = req.body;
+    const expense = await Expense.findById(req.params.id);
+    if (!expense) return res.status(404).json({ message: 'Expense not found' });
+
+    if (expense.status !== 'Approved') {
+      return res.status(400).json({
+        message: `Only approved expenses can be marked as paid (current status: ${expense.status})`,
+      });
+    }
+
+    expense.status = 'Paid';
+    expense.paidBy = req.user.id;
+    expense.paidAt = new Date();
+    if (paymentReference?.trim()) expense.paymentReference = paymentReference.trim();
+    await expense.save();
+
+    const populated = await Expense.findById(expense._id)
+      .populate('addedBy', 'name email role')
+      .populate('approvedBy', 'name email')
+      .populate('paidBy', 'name email')
+      .populate('project', 'name');
+
+    logActivity({
+      req,
+      action: 'expense.markPaid',
+      resource: 'expense',
+      resourceId: expense._id,
+      details: `Marked ₹${expense.amount} expense as paid to ${populated.addedBy?.name}${paymentReference ? ` (ref: ${paymentReference})` : ''}`,
     });
 
     res.json(populated);
@@ -398,17 +459,13 @@ exports.approveExpense = async (req, res, next) => {
 
 /**
  * POST /api/expenses/:id/reject
- * Manager/admin only. Optional reason in body.
+ * Admin only. Optional reason in body.
  */
 exports.rejectExpense = async (req, res, next) => {
   try {
     const { reason } = req.body;
     const expense = await Expense.findById(req.params.id);
     if (!expense) return res.status(404).json({ message: 'Expense not found' });
-
-    if (String(expense.addedBy) === req.user.id) {
-      return res.status(400).json({ message: 'Cannot reject your own expense' });
-    }
 
     expense.status = 'Rejected';
     expense.approvedBy = req.user.id;
@@ -419,6 +476,7 @@ exports.rejectExpense = async (req, res, next) => {
     const populated = await Expense.findById(expense._id)
       .populate('addedBy', 'name email role')
       .populate('approvedBy', 'name email')
+      .populate('paidBy', 'name email')
       .populate('project', 'name');
 
     logActivity({

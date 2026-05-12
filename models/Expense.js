@@ -14,7 +14,9 @@ const CATEGORIES = [
 
 const PAYMENT_MODES = ['Cash', 'UPI', 'Card', 'Bank Transfer', 'Cheque', 'Other'];
 
-const STATUSES = ['Pending', 'Approved', 'Rejected'];
+// Lifecycle: Pending → Approved → Paid  (or Pending → Rejected)
+// Only admin can transition Approved → Paid (after disbursing the reimbursement).
+const STATUSES = ['Pending', 'Approved', 'Rejected', 'Paid'];
 
 const expenseSchema = new mongoose.Schema(
   {
@@ -29,6 +31,9 @@ const expenseSchema = new mongoose.Schema(
     status: { type: String, enum: STATUSES, default: 'Pending' },
     approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     approvedAt: { type: Date },
+    paidBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    paidAt: { type: Date },
+    paymentReference: { type: String, trim: true }, // optional UTR / txn ID
     rejectionReason: { type: String, trim: true },
     receiptUrl: { type: String, trim: true, required: true },
     receiptPublicId: { type: String, trim: true }, // Cloudinary public_id for cleanup
