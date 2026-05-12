@@ -29,13 +29,17 @@ const todayRange = () => {
 exports.getLeads = async (req, res, next) => {
   try {
     const { status, source, search, assignedTo, project, page, limit,
-            createdFrom, createdTo, followUpFrom, followUpTo } = req.query;
+            createdFrom, createdTo, followUpFrom, followUpTo, hasFollowUp, overdue } = req.query;
     const filter = buildRoleFilter(req.user);
 
     if (status) filter.status = status;
     if (source) filter.source = source;
-    if (assignedTo === 'unassigned') filter.assignedTo = null;
-    else if (assignedTo) filter.assignedTo = assignedTo;
+    // Sales users are locked to their own leads (set by buildRoleFilter).
+    // Don't let them override assignedTo via query params.
+    if (req.user.role !== 'sales') {
+      if (assignedTo === 'unassigned') filter.assignedTo = null;
+      else if (assignedTo) filter.assignedTo = assignedTo;
+    }
     if (project) filter.project = project;
     if (search) {
       filter.$or = [
@@ -63,6 +67,21 @@ exports.getLeads = async (req, res, next) => {
         end.setHours(23, 59, 59, 999);
         filter.followUpDate.$lte = end;
       }
+    } else if (hasFollowUp === 'true') {
+      // Any lead with a follow-up scheduled (not null/undefined)
+      filter.followUpDate = { $exists: true, $ne: null };
+    } else if (hasFollowUp === 'false') {
+      // Leads without any follow-up
+      filter.followUpDate = { $in: [null, undefined] };
+    }
+
+    // Overdue: followUpDate < today's start AND status not in terminal set.
+    // Used by the dashboard "Overdue" stat card click-through.
+    if (overdue === 'true') {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      filter.followUpDate = { $lt: startOfToday };
+      filter.status = { $nin: ['Closed', 'Not Interested', 'Dead'] };
     }
 
     const perPage = Math.min(Number(limit) || 30, 100);
@@ -578,13 +597,17 @@ exports.exportLeads = async (req, res, next) => {
   try {
     // Same filter logic as getLeads
     const { status, source, search, assignedTo, project,
-            createdFrom, createdTo, followUpFrom, followUpTo } = req.query;
+            createdFrom, createdTo, followUpFrom, followUpTo, hasFollowUp } = req.query;
     const filter = buildRoleFilter(req.user);
 
     if (status) filter.status = status;
     if (source) filter.source = source;
-    if (assignedTo === 'unassigned') filter.assignedTo = null;
-    else if (assignedTo) filter.assignedTo = assignedTo;
+    // Sales users are locked to their own leads (set by buildRoleFilter).
+    // Don't let them override assignedTo via query params.
+    if (req.user.role !== 'sales') {
+      if (assignedTo === 'unassigned') filter.assignedTo = null;
+      else if (assignedTo) filter.assignedTo = assignedTo;
+    }
     if (project) filter.project = project;
     if (search) {
       filter.$or = [
@@ -610,6 +633,10 @@ exports.exportLeads = async (req, res, next) => {
         end.setHours(23, 59, 59, 999);
         filter.followUpDate.$lte = end;
       }
+    } else if (hasFollowUp === 'true') {
+      filter.followUpDate = { $exists: true, $ne: null };
+    } else if (hasFollowUp === 'false') {
+      filter.followUpDate = { $in: [null, undefined] };
     }
 
     const leads = await Lead.find(filter)
