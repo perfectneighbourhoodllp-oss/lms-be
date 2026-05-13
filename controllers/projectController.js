@@ -67,25 +67,55 @@ exports.deleteProject = async (req, res, next) => {
 
 /**
  * Assign agents to a project (replaces the full list).
- * Body: { agentIds: ['id1', 'id2', ...] }
+ * Body: {
+ *   agentIds: ['id1', 'id2', ...],
+ *   agentWeights?: { 'id1': 2, 'id2': 1, ... }  // optional, defaults to weight 1 each
+ * }
+ * Weights are clamped to [1, 10]. Stale entries (for un-selected agents) are pruned.
  */
 exports.assignAgents = async (req, res, next) => {
   try {
-    const { agentIds = [] } = req.body;
+    const { agentIds = [], agentWeights = {} } = req.body;
+
+    // Sanitise weights: only keep entries for currently selected agents,
+    // clamp to [1, 10], coerce to integer. Omit default (1) values to keep
+    // the stored object sparse.
+    const cleanWeights = {};
+    let hasCustomWeights = false;
+    for (const id of agentIds) {
+      const raw = agentWeights[id];
+      if (raw === undefined || raw === null || raw === '') continue;
+      const w = Math.max(1, Math.min(10, Math.floor(Number(raw)) || 1));
+      if (w !== 1) {
+        cleanWeights[id] = w;
+        hasCustomWeights = true;
+      }
+    }
 
     const project = await Project.findByIdAndUpdate(
       req.params.id,
       {
         $set: {
           assignedAgents: agentIds,
-          nextAgentIndex: 0, // reset round-robin when roster changes
+          agentWeights: cleanWeights,
+          nextAgentIndex: 0, // reset rotation when roster or weights change
         },
       },
       { new: true }
     ).populate('assignedAgents', 'name email role');
 
     if (!project) return res.status(404).json({ message: 'Project not found' });
-    logActivity({ req, action: 'project.assignAgents', resource: 'project', resourceId: project._id, details: `Updated agent roster for "${project.name}" (${agentIds.length} agents)` });
+
+    const weightSummary = hasCustomWeights
+      ? ` with proportions (${Object.entries(cleanWeights).map(([, w]) => w).join(':')})`
+      : '';
+    logActivity({
+      req,
+      action: 'project.assignAgents',
+      resource: 'project',
+      resourceId: project._id,
+      details: `Updated agent roster for "${project.name}" (${agentIds.length} agents)${weightSummary}`,
+    });
     res.json(project);
   } catch (err) {
     next(err);

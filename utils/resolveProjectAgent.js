@@ -1,27 +1,39 @@
 const Project = require('../models/Project');
 
 /**
- * Round-robin agent assignment for a project, filtered to only
- * agents that are isActive AND isAvailable.
+ * Weighted round-robin agent assignment for a project.
  *
- * - Increments project.nextAgentIndex atomically (race-condition safe)
- * - Skips deactivated or paused agents
+ * Each eligible (isActive AND isAvailable) agent is expanded into the
+ * rotation list `weight` times. A weight of 1 (the default) reproduces
+ * pure round-robin. Higher weights cluster — e.g. weight 2 means the
+ * agent receives two leads back-to-back per cycle.
+ *
+ * - Filters paused/deactivated agents BEFORE expansion (their slots vanish)
+ * - Atomically increments project.nextAgentIndex (race-condition safe)
  * - Returns null if the project has no eligible agents
  */
 module.exports = async function resolveProjectAgent(projectId) {
   if (!projectId) return null;
 
-  // Read the project + populated agents to find which are eligible
+  // Read project + populated agents to determine eligibility
   const projectDoc = await Project.findById(projectId)
     .populate('assignedAgents', 'isActive isAvailable')
     .lean();
   if (!projectDoc || !projectDoc.assignedAgents?.length) return null;
 
-  const eligibleIds = projectDoc.assignedAgents
-    .filter((a) => a.isActive !== false && a.isAvailable !== false)
-    .map((a) => a._id);
+  const weights = projectDoc.agentWeights || {};
 
-  if (!eligibleIds.length) return null;
+  // Build expanded weighted list, filtering paused/deactivated first
+  const expanded = [];
+  for (const agent of projectDoc.assignedAgents) {
+    if (agent.isActive === false || agent.isAvailable === false) continue;
+    const raw = weights[String(agent._id)];
+    // Clamp to [1, 10]; floor non-integers; default 1 when unset
+    const w = Math.max(1, Math.min(10, Math.floor(Number(raw) || 1)));
+    for (let i = 0; i < w; i++) expanded.push(agent._id);
+  }
+
+  if (!expanded.length) return null;
 
   // Atomically increment the rotation cursor
   const updated = await Project.findOneAndUpdate(
@@ -31,6 +43,6 @@ module.exports = async function resolveProjectAgent(projectId) {
   );
   if (!updated) return null;
 
-  const idx = updated.nextAgentIndex % eligibleIds.length;
-  return eligibleIds[idx];
+  const idx = (updated.nextAgentIndex || 0) % expanded.length;
+  return expanded[idx];
 };
