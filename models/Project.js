@@ -13,6 +13,10 @@ const projectSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true },
     // Agents assigned to handle leads for this project
     assignedAgents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    // Managers responsible for overseeing this project.
+    // A manager with at least one project here is scoped to only those projects;
+    // a manager with zero assignments anywhere sees all (default behaviour).
+    assignedManagers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     // Round-robin pointer — index of next agent to receive a lead
     nextAgentIndex: { type: Number, default: 0 },
     // Per-agent weights for proportional lead distribution.

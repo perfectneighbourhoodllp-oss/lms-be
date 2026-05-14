@@ -7,13 +7,46 @@ const createNotification = require('../utils/createNotification');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
 const notifyUnassigned = require('../utils/notifyUnassigned');
 const Project = require('../models/Project');
+const { getManagerProjectFilter } = require('../utils/managerScope');
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
-/** Build Mongoose filter based on caller's role */
-const buildRoleFilter = (user) => {
+/**
+ * Build Mongoose filter based on caller's role.
+ *
+ *   • sales   → only their own assigned leads
+ *   • admin   → no filter (sees all)
+ *   • manager → if they have project assignments, scoped to those;
+ *               otherwise no filter (sees all).
+ *
+ * Async because manager scoping requires a DB lookup for assigned projects.
+ */
+const buildRoleFilter = async (user) => {
   if (user.role === 'sales') return { assignedTo: user.id };
-  return {}; // admin and manager see all
+  if (user.role === 'admin') return {};
+  // Manager: apply project-scope filter if any projects are assigned.
+  return await getManagerProjectFilter(user);
+};
+
+/**
+ * Safely apply a URL-supplied `project` filter, respecting the role/scope
+ * already set on `filter`. If the requested project is outside the manager's
+ * scope, returns `null` — caller should short-circuit to empty results.
+ *
+ * @returns {object | null} mutated filter, or null if scope violation
+ */
+const applyProjectQuery = (filter, requestedProject) => {
+  if (!requestedProject) return filter;
+  // If the role filter already restricts to a list of projects (manager scope),
+  // the requested project must be inside that list.
+  if (filter.project && Array.isArray(filter.project.$in)) {
+    const scopedIds = filter.project.$in.map(String);
+    if (!scopedIds.includes(String(requestedProject))) {
+      return null; // out-of-scope → caller returns empty
+    }
+  }
+  filter.project = requestedProject;
+  return filter;
 };
 
 const todayRange = () => {
@@ -30,7 +63,7 @@ exports.getLeads = async (req, res, next) => {
   try {
     const { status, source, search, assignedTo, project, page, limit,
             createdFrom, createdTo, followUpFrom, followUpTo, hasFollowUp, overdue } = req.query;
-    const filter = buildRoleFilter(req.user);
+    const filter = await buildRoleFilter(req.user);
 
     if (status) filter.status = status;
     if (source) filter.source = source;
@@ -40,7 +73,13 @@ exports.getLeads = async (req, res, next) => {
       if (assignedTo === 'unassigned') filter.assignedTo = null;
       else if (assignedTo) filter.assignedTo = assignedTo;
     }
-    if (project) filter.project = project;
+    // Apply project filter while respecting manager scope
+    if (applyProjectQuery(filter, project) === null) {
+      // Manager tried to filter to a project they don't manage — return empty
+      const perPage = Math.min(Number(limit) || 30, 100);
+      const currentPage = Math.max(Number(page) || 1, 1);
+      return res.json({ leads: [], total: 0, page: currentPage, limit: perPage });
+    }
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -510,7 +549,7 @@ exports.getTodayFollowups = async (req, res, next) => {
   try {
     const { start, end } = todayRange();
     const filter = {
-      ...buildRoleFilter(req.user),
+      ...(await buildRoleFilter(req.user)),
       followUpDate: { $gte: start, $lte: end },
     };
 
@@ -530,7 +569,7 @@ exports.getOverdueLeads = async (req, res, next) => {
   try {
     const { start } = todayRange();
     const filter = {
-      ...buildRoleFilter(req.user),
+      ...(await buildRoleFilter(req.user)),
       followUpDate: { $lt: start },
       status: { $nin: ['Closed', 'Not Interested', 'Dead'] },
     };
@@ -551,7 +590,7 @@ exports.getOverdueLeads = async (req, res, next) => {
 
 exports.getStats = async (req, res, next) => {
   try {
-    const baseFilter = buildRoleFilter(req.user);
+    const baseFilter = await buildRoleFilter(req.user);
     const { start, end } = todayRange();
     const monthStart = new Date();
     monthStart.setDate(1);
@@ -598,7 +637,7 @@ exports.exportLeads = async (req, res, next) => {
     // Same filter logic as getLeads
     const { status, source, search, assignedTo, project,
             createdFrom, createdTo, followUpFrom, followUpTo, hasFollowUp } = req.query;
-    const filter = buildRoleFilter(req.user);
+    const filter = await buildRoleFilter(req.user);
 
     if (status) filter.status = status;
     if (source) filter.source = source;
@@ -608,7 +647,13 @@ exports.exportLeads = async (req, res, next) => {
       if (assignedTo === 'unassigned') filter.assignedTo = null;
       else if (assignedTo) filter.assignedTo = assignedTo;
     }
-    if (project) filter.project = project;
+    // Apply project filter while respecting manager scope
+    if (applyProjectQuery(filter, project) === null) {
+      // Manager tried to export a project they don't manage — empty CSV
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="leads.csv"');
+      return res.end('');
+    }
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: 'i' } },
