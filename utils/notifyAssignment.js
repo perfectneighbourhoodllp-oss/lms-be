@@ -1,6 +1,22 @@
 const User = require('../models/User');
+const Project = require('../models/Project');
 const transporter = require('../config/email');
 const createNotification = require('./createNotification');
+
+/**
+ * Resolve the project name from either a populated `lead.project` or a raw
+ * ObjectId reference. Returns null if no project linked or lookup fails.
+ */
+const resolveProjectName = async (project) => {
+  if (!project) return null;
+  if (typeof project === 'object' && project.name) return project.name;
+  try {
+    const p = await Project.findById(project).select('name developer').lean();
+    return p ? (p.developer ? `${p.name} (${p.developer})` : p.name) : null;
+  } catch {
+    return null;
+  }
+};
 
 /**
  * Send an email notification + create in-app notification when a lead is assigned.
@@ -27,6 +43,8 @@ const notifyAssignment = async (agentId, lead, actorId) => {
       ? new Date(lead.followUpDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })
       : 'Not set';
 
+    const projectName = await resolveProjectName(lead.project);
+
     const html = `
 <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
   <h2 style="color:#1d4ed8">New Lead Assigned to You</h2>
@@ -40,6 +58,10 @@ const notifyAssignment = async (agentId, lead, actorId) => {
       <td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:bold;background:#f9fafb">Phone</td>
       <td style="padding:8px 12px;border:1px solid #e5e7eb">${lead.phone}</td>
     </tr>
+    ${projectName ? `<tr>
+      <td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:bold;background:#f9fafb">Project</td>
+      <td style="padding:8px 12px;border:1px solid #e5e7eb">🏗 ${projectName}</td>
+    </tr>` : ''}
     <tr>
       <td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:bold;background:#f9fafb">Source</td>
       <td style="padding:8px 12px;border:1px solid #e5e7eb">${lead.source || 'Other'}</td>

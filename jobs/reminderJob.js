@@ -15,6 +15,7 @@ const buildEmailHtml = (userName, leads) => `
       <tr style="background:#eff6ff">
         <th style="padding:8px 12px;text-align:left;border:1px solid #dbeafe">Name</th>
         <th style="padding:8px 12px;text-align:left;border:1px solid #dbeafe">Phone</th>
+        <th style="padding:8px 12px;text-align:left;border:1px solid #dbeafe">Project</th>
         <th style="padding:8px 12px;text-align:left;border:1px solid #dbeafe">Status</th>
         <th style="padding:8px 12px;text-align:left;border:1px solid #dbeafe">Follow-Up</th>
       </tr>
@@ -26,6 +27,7 @@ const buildEmailHtml = (userName, leads) => `
         <tr>
           <td style="padding:8px 12px;border:1px solid #e5e7eb">${l.name}</td>
           <td style="padding:8px 12px;border:1px solid #e5e7eb">${l.phone}</td>
+          <td style="padding:8px 12px;border:1px solid #e5e7eb">${l.project?.name || '—'}</td>
           <td style="padding:8px 12px;border:1px solid #e5e7eb">${l.status}</td>
           <td style="padding:8px 12px;border:1px solid #e5e7eb">${fmt(l.followUpDate)}</td>
         </tr>`
@@ -60,7 +62,9 @@ const startReminderJob = () => {
         const leads = await Lead.find({
           assignedTo: user._id,
           followUpDate: { $gte: start, $lte: end },
-        }).lean();
+        })
+          .populate('project', 'name')
+          .lean();
 
         if (!leads.length) continue;
         if (!user.email) continue;

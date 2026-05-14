@@ -13,7 +13,12 @@ const fmtTime = (d) =>
 
 const waLink = (phone) => `https://wa.me/${phone.replace(/\D/g, '')}`;
 
-const buildEmail = (lead) => `
+const buildEmail = (lead) => {
+  const projectName = lead.project?.name
+    ? (lead.project.developer ? `${lead.project.name} (${lead.project.developer})` : lead.project.name)
+    : null;
+
+  return `
 <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
   <h2 style="color:#1d4ed8">Follow-Up Reminder</h2>
   <p>It's time to follow up with <strong>${lead.name}</strong>.</p>
@@ -29,6 +34,10 @@ const buildEmail = (lead) => `
         <a href="${waLink(lead.phone)}">WhatsApp</a>
       </td>
     </tr>
+    ${projectName ? `<tr>
+      <td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:bold;background:#f9fafb">Project</td>
+      <td style="padding:8px 12px;border:1px solid #e5e7eb">🏗 ${projectName}</td>
+    </tr>` : ''}
     <tr>
       <td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:bold;background:#f9fafb">Status</td>
       <td style="padding:8px 12px;border:1px solid #e5e7eb">${lead.status}</td>
@@ -44,6 +53,7 @@ const buildEmail = (lead) => `
   </table>
   <p style="color:#6b7280;margin-top:24px;font-size:13px">Sent by PNH Lead Management System</p>
 </div>`;
+};
 
 /** Runs every 5 minutes — sends reminder emails for follow-ups that are due */
 const startFollowUpReminderJob = () => {
@@ -62,7 +72,10 @@ const startFollowUpReminderJob = () => {
           // Notified before the current followUpDate — means the date was rescheduled after the last notification
           { $expr: { $lt: ['$followUpNotifiedAt', '$followUpDate'] } },
         ],
-      }).populate('assignedTo', 'name email isActive').lean();
+      })
+        .populate('assignedTo', 'name email isActive')
+        .populate('project', 'name developer')
+        .lean();
 
       // Filter out date-only follow-ups (no time specified — stored at 00:00).
       // Those are handled by the daily 9 AM summary email instead.
