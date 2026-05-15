@@ -18,4 +18,12 @@ const activityLogSchema = new mongoose.Schema(
 activityLogSchema.index({ createdAt: -1 });
 activityLogSchema.index({ user: 1, createdAt: -1 });
 
+// TTL — auto-delete activity logs older than 180 days (6 months audit window).
+// MongoDB's background task runs every ~60 seconds. The first sweep after
+// this index is created will purge any existing logs older than 180d.
+activityLogSchema.index(
+  { createdAt: 1 },
+  { expireAfterSeconds: 180 * 24 * 60 * 60 }
+);
+
 module.exports = mongoose.model('ActivityLog', activityLogSchema);

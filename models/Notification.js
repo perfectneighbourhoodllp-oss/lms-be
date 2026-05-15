@@ -18,5 +18,13 @@ const notificationSchema = new mongoose.Schema(
 notificationSchema.index({ user: 1, isRead: 1, createdAt: -1 });
 notificationSchema.index({ user: 1, createdAt: -1 });
 
+// TTL — auto-delete notifications older than 90 days.
+// MongoDB's background task runs every ~60 seconds. The first sweep after
+// this index is created will purge any existing notifications older than 90d.
+notificationSchema.index(
+  { createdAt: 1 },
+  { expireAfterSeconds: 90 * 24 * 60 * 60 }
+);
+
 module.exports = mongoose.model('Notification', notificationSchema);
 module.exports.TYPES = TYPES;
