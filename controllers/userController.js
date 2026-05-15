@@ -214,15 +214,10 @@ exports.setMyAvailability = async (req, res, next) => {
       return res.status(400).json({ message: 'isAvailable (boolean) is required' });
     }
 
-    // Only managers can self-toggle availability.
-    // Admins can't pause themselves (system needs at least one active admin).
-    // Sales agents must be paused by their admin/manager via the Team page.
-    if (req.user.role !== 'manager') {
-      return res.status(403).json({
-        message: req.user.role === 'admin'
-          ? 'Admins cannot pause themselves'
-          : 'Only your admin or manager can pause your availability',
-      });
+    // Admin cannot pause themselves — system needs at least one active admin.
+    // Sales agents and managers can self-toggle freely.
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ message: 'Admins cannot pause themselves' });
     }
 
     const user = await User.findByIdAndUpdate(
