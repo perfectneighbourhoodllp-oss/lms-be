@@ -1,6 +1,14 @@
 const router = require('express').Router();
 const { protect, authorize } = require('../middleware/auth');
-const { getUsers, createUser, updateUser, resetPassword, getAgentPerformance, setMyAvailability } = require('../controllers/userController');
+const {
+  getUsers,
+  createUser,
+  updateUser,
+  resetPassword,
+  getAgentPerformance,
+  setMyAvailability,
+  getAgentProfileStats,
+} = require('../controllers/userController');
 
 router.use(protect);
 
@@ -11,6 +19,10 @@ router.put('/me/availability', setMyAvailability);
 router.get('/', getUsers);
 router.get('/agent-performance', authorize('admin', 'manager'), getAgentPerformance);
 router.post('/', authorize('admin', 'manager'), createUser);
+
+// Per-agent profile stats — permission check inside controller
+// (admin: any agent, manager: their team, sales: self only)
+router.get('/:id/profile-stats', getAgentProfileStats);
 
 // Admin can update any user; manager restricted inside controller
 router.put('/:id', authorize('admin', 'manager'), updateUser);

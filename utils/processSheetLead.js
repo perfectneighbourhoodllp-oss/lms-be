@@ -69,7 +69,7 @@ const processSheetLead = async (row, sheetConfig) => {
     }
 
     // Validate source — default to 'Ads' if invalid
-    const validSources = ['Instagram', 'Ads', 'Referral', 'Walk-in', 'Website', 'Other'];
+    const validSources = ['Instagram', 'Ads', 'Referral', 'Walk-in', 'Website', 'Database', 'Other'];
     const resolvedSource = validSources.includes(source) ? source : 'Ads';
 
     // Resolve agent — leave null if no eligible agent on the project.

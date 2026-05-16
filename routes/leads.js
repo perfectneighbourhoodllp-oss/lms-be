@@ -34,7 +34,7 @@ router.use(protect);
 router.get('/stats', getStats);
 router.get('/today-followups', getTodayFollowups);
 router.get('/overdue', getOverdueLeads);
-router.get('/export', exportLeads);
+router.get('/export', authorize('admin'), exportLeads);
 
 router.route('/').get(getLeads).post(createLead);
 router.post('/bulk', authorize('admin', 'manager'), upload.single('file'), bulkUpload);
