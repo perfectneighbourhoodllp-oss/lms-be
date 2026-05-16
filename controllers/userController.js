@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Lead = require('../models/Lead');
 const Project = require('../models/Project');
@@ -289,6 +290,11 @@ exports.getAgentProfileStats = async (req, res, next) => {
   try {
     const targetId = req.params.id;
 
+    // Reject obviously bad IDs early (avoids the ObjectId cast throwing later)
+    if (!mongoose.Types.ObjectId.isValid(targetId)) {
+      return res.status(400).json({ message: 'Invalid agent ID' });
+    }
+
     // Permission gate
     const isSelf = String(req.user.id) === String(targetId);
     if (!isSelf && req.user.role === 'sales') {
@@ -325,7 +331,12 @@ exports.getAgentProfileStats = async (req, res, next) => {
     const twentyMinAgo = new Date(now.getTime() - 20 * 60 * 1000);
     const TERMINAL = ['Closed', 'Not Interested', 'Dead'];
 
-    const agentFilter = { assignedTo: targetId };
+    // IMPORTANT: cast to ObjectId. Mongoose's $match inside .aggregate() does
+    // NOT auto-cast string IDs the way .find() and .countDocuments() do, so
+    // a raw string would silently match zero docs in the aggregate queries
+    // (returning 0 pipeline counts, 0 remarks, null averages, etc.).
+    const targetObjectId = new mongoose.Types.ObjectId(targetId);
+    const agentFilter = { assignedTo: targetObjectId };
 
     // Single Promise.all for all aggregations — fast
     const [
