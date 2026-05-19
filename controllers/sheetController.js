@@ -160,6 +160,24 @@ exports.updateConfig = async (req, res, next) => {
       .populate('project', 'name developer');
 
     if (!config) return res.status(404).json({ message: 'Config not found' });
+
+    // Audit: distinguish pause/resume from general edits so the activity log
+    // tells the right story when something goes wrong later.
+    const isPauseToggle =
+      isActive !== undefined && Object.keys(req.body).length === 1;
+    const label_ = config.label || config.sheetId;
+    logActivity({
+      req,
+      action: isPauseToggle
+        ? isActive ? 'sheet.resume' : 'sheet.pause'
+        : 'sheet.update',
+      resource: 'sheet',
+      resourceId: config._id,
+      details: isPauseToggle
+        ? `${isActive ? 'Resumed' : 'Paused'} sheet ${label_}`
+        : `Updated sheet ${label_}`,
+    });
+
     res.json(config);
   } catch (err) {
     next(err);

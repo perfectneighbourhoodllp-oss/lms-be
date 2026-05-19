@@ -12,6 +12,16 @@ const userSchema = new mongoose.Schema(
     // Self-managed: when false, user is excluded from new lead round-robin
     // assignment but can still log in and work existing leads.
     isAvailable: { type: Boolean, default: true },
+
+    // Email-OTP login second factor (currently enforced only for role === 'admin').
+    // Lifecycle:
+    //   1. login() with valid password → server stores hash + expiry, emails OTP
+    //   2. verifyLoginOtp() compares + clears these fields on success
+    //   3. After 5 wrong attempts OR after expiry, user must re-submit password
+    loginOtpHash: { type: String, select: false },
+    loginOtpExpires: { type: Date, select: false },
+    loginOtpAttempts: { type: Number, default: 0, select: false },
+    loginOtpLastSentAt: { type: Date, select: false },
   },
   { timestamps: true }
 );
