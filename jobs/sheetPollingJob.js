@@ -12,7 +12,7 @@ const syncWithRetry = async (config) => {
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const result = await syncSheet(config);
+      const result = await syncSheet(config, 'polling');
       if (result.total > 0) {
         console.log(
           `[SHEET-POLL] Sheet "${name}": ${result.added} added, ${result.updated} updated, ${result.skipped} skipped`

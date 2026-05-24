@@ -7,6 +7,7 @@ const {
   deleteConfig,
   manualSync,
   incoming,
+  getSyncLogs,
 } = require('../controllers/sheetController');
 
 // Public — Google Apps Script sends here (authenticated via secret header)
@@ -14,6 +15,7 @@ router.post('/incoming', incoming);
 
 // Protected — admin/manager
 router.get('/', protect, authorize('admin', 'manager'), getConfigs);
+router.get('/sync-logs', protect, authorize('admin', 'manager'), getSyncLogs);
 router.post('/', protect, authorize('admin'), createConfig);
 router.put('/:id', protect, authorize('admin'), updateConfig);
 router.delete('/:id', protect, authorize('admin'), deleteConfig);

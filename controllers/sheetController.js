@@ -2,8 +2,47 @@ const https = require('https');
 const http = require('http');
 const { parse } = require('csv-parse/sync');
 const SheetConfig = require('../models/SheetConfig');
+const SheetSyncLog = require('../models/SheetSyncLog');
 const processSheetLead = require('../utils/processSheetLead');
 const logActivity = require('../utils/logActivity');
+
+/**
+ * Persist a row outcome to the SheetSyncLog collection. Fire-and-forget —
+ * logging failures must never block lead ingestion.
+ *
+ * Extracts name/phone/email from the raw row using the config's columnMap so
+ * the log has scannable values even when the lead was skipped.
+ */
+const recordSyncLog = ({ config, source, row, rowNumber, result }) => {
+  try {
+    // Extract using the same column-map fallback the processor uses
+    const cm = config?.columnMap || {};
+    const getCol = (key) => {
+      if (!key || !row) return '';
+      if (row[key] !== undefined) return row[key];
+      const lower = String(key).trim().toLowerCase();
+      const match = Object.keys(row).find((k) => k.trim().toLowerCase() === lower);
+      return match ? row[match] : '';
+    };
+
+    SheetSyncLog.create({
+      sheetConfig: config?._id,
+      sheetId: config?.sheetId,
+      gid: config?.gid,
+      source,
+      rowNumber,
+      rawRow: row,
+      extractedName: String(getCol(cm.name || 'name') || '').toString().trim().slice(0, 200),
+      extractedPhone: String(getCol(cm.phone || 'phone') || '').toString().trim().slice(0, 60),
+      extractedEmail: String(getCol(cm.email || 'email') || '').toString().trim().slice(0, 200),
+      status: result.status,
+      reason: result.error || (result.status === 'success' ? 'Lead created' : result.status === 'duplicate' ? 'Existing lead updated' : undefined),
+      lead: result.lead?._id,
+    }).catch((err) => console.error('[SheetSyncLog] Failed to record:', err.message));
+  } catch (err) {
+    console.error('[SheetSyncLog] Synchronous error:', err.message);
+  }
+};
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
@@ -56,8 +95,12 @@ const fetchSheetCSV = (sheetId, gid = '0') =>
 
 /**
  * Sync a single SheetConfig — fetch CSV, process new rows.
+ * Records every row outcome in SheetSyncLog for admin debugging.
+ *
+ * @param {Object} config - SheetConfig document
+ * @param {string} source - 'polling' | 'manual' — used for log attribution
  */
-const syncSheet = async (config) => {
+const syncSheet = async (config, source = 'polling') => {
   const csv = await fetchSheetCSV(config.sheetId, config.gid || '0');
 
   const records = parse(csv, {
@@ -67,15 +110,22 @@ const syncSheet = async (config) => {
   });
 
   // Skip already-synced rows
-  const newRows = records.slice(config.lastSyncedRow);
+  const startIdx = config.lastSyncedRow;
+  const newRows = records.slice(startIdx);
   if (!newRows.length) return { added: 0, updated: 0, skipped: 0, total: 0 };
 
-  let added = 0, updated = 0, skipped = 0;
+  let added = 0, updated = 0, skipped = 0, failed = 0;
 
-  for (const row of newRows) {
+  for (let i = 0; i < newRows.length; i++) {
+    const row = newRows[i];
+    const rowNumber = startIdx + i + 2; // +2 because: +1 for 1-indexed, +1 for header row
+
     const result = await processSheetLead(row, config);
+    recordSyncLog({ config, source, row, rowNumber, result });
+
     if (result.status === 'success') added++;
     else if (result.status === 'duplicate') updated++;
+    else if (result.status === 'failed') failed++;
     else skipped++;
   }
 
@@ -84,7 +134,7 @@ const syncSheet = async (config) => {
     lastSyncedRow: config.lastSyncedRow + newRows.length,
   });
 
-  return { added, updated, skipped, total: newRows.length };
+  return { added, updated, skipped, failed, total: newRows.length };
 };
 
 /* ─── CRUD ────────────────────────────────────────────────── */
@@ -202,7 +252,7 @@ exports.manualSync = async (req, res, next) => {
     const config = await SheetConfig.findById(req.params.id);
     if (!config) return res.status(404).json({ message: 'Config not found' });
 
-    const result = await syncSheet(config);
+    const result = await syncSheet(config, 'manual');
     res.json({ message: 'Sync complete', ...result });
   } catch (err) {
     next(err);
@@ -243,8 +293,17 @@ exports.incoming = async (req, res, next) => {
 
     const result = await processSheetLead(row, config);
 
-    // Increment lastSyncedRow so polling doesn't re-process this row
-    await SheetConfig.findByIdAndUpdate(config._id, { $inc: { lastSyncedRow: 1 } });
+    // BUG FIX (2026-05-24): we used to do `$inc: { lastSyncedRow: 1 }` here so
+    // polling wouldn't re-process this row. But that assumed webhooks fire 1:1
+    // with rows in order — and they don't. Whenever Apps Script dropped a
+    // delivery (network blip, quota hit, script error), the cursor advanced
+    // by 1 anyway, causing polling to permanently skip the missed row.
+    //
+    // Now: let polling own the cursor. The webhook only processes the row
+    // immediately. Worst case: polling re-processes a row that came in via
+    // webhook → `processSheetLead` dedup turns it into a no-op update.
+    // Trade rare duplicates (handled cleanly) for zero missed leads.
+    recordSyncLog({ config, source: 'webhook', row, result });
 
     if (result.status === 'skipped' || result.status === 'failed') {
       console.log(`[SHEET] Incoming lead from sheet ${sheetId}: ${result.status}`);
@@ -255,6 +314,88 @@ exports.incoming = async (req, res, next) => {
       console.log(`[SHEET] Incoming lead from sheet ${sheetId}: ${result.status}`);
     }
     res.json({ status: result.status });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ─── Sync Logs (admin viewer) ────────────────────────────── */
+
+/**
+ * GET /api/sheets/sync-logs
+ * Query: sheetConfig, status, source, dateFrom, dateTo, search, page, limit
+ *
+ * Returns paginated SheetSyncLog entries with stats summary.
+ */
+exports.getSyncLogs = async (req, res, next) => {
+  try {
+    const {
+      sheetConfig,
+      status,
+      source,
+      dateFrom,
+      dateTo,
+      search,
+      page = 1,
+      limit = 50,
+    } = req.query;
+
+    const filter = {};
+    if (sheetConfig) filter.sheetConfig = sheetConfig;
+    if (status) filter.status = status;
+    if (source) filter.source = source;
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        filter.createdAt.$lte = end;
+      }
+    }
+    if (search) {
+      filter.$or = [
+        { extractedName: { $regex: search, $options: 'i' } },
+        { extractedPhone: { $regex: search, $options: 'i' } },
+        { extractedEmail: { $regex: search, $options: 'i' } },
+        { reason: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const perPage = Math.min(Number(limit) || 50, 200);
+    const currentPage = Math.max(Number(page) || 1, 1);
+    const skip = (currentPage - 1) * perPage;
+
+    const [logs, total, statsAgg] = await Promise.all([
+      SheetSyncLog.find(filter)
+        .populate('sheetConfig', 'sheetId gid label sheetName project')
+        .populate({
+          path: 'sheetConfig',
+          populate: { path: 'project', select: 'name' },
+        })
+        .populate('lead', 'name phone status')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(perPage)
+        .lean(),
+      SheetSyncLog.countDocuments(filter),
+      // Stats summary across the SAME filter (minus pagination)
+      SheetSyncLog.aggregate([
+        { $match: filter },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const stats = { success: 0, duplicate: 0, skipped: 0, failed: 0 };
+    statsAgg.forEach((s) => { stats[s._id] = s.count; });
+
+    res.json({
+      logs,
+      total,
+      page: currentPage,
+      pages: Math.ceil(total / perPage),
+      stats,
+    });
   } catch (err) {
     next(err);
   }
