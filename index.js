@@ -56,6 +56,7 @@ app.use('/api/sheets', require('./routes/sheets'));
 app.use('/api/activity-logs', require('./routes/activityLogs'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/expenses', require('./routes/expenses'));
+app.use('/api/attendance', require('./routes/attendance'));
 
 // Health check
 app.get('/api/health', (_, res) => res.json({ status: 'ok', env: process.env.NODE_ENV }));
