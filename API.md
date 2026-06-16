@@ -101,7 +101,7 @@ Paginated list of leads with role-based filtering.
 | Param | Description |
 |-------|-------------|
 | `search` | Case-insensitive match against name, phone, email |
-| `status` | Exact match: `New`, `Called`, `Interested`, `Site Visit`, `Closed` |
+| `status` | Exact match: `New`, `Called`, `RNR`, `Interested`, `Webinar`, `Site Visit`, `Closed`, `Not Interested`, `Dead` |
 | `source` | Exact match: `Instagram`, `Ads`, `Referral`, `Walk-in`, `Website`, `Other` |
 | `project` | Project ObjectId |
 | `assignedTo` | User ObjectId |
