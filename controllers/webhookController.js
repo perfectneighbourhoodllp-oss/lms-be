@@ -182,11 +182,12 @@ const processLeadgenEvent = async (value) => {
     return;
   }
 
-  // 5. Resolve project + agent assignment
-  // assignedTo may be null (no eligible agent) — that's OK, lead stays unassigned.
+  // 5. Resolve project (read-only — no side effects).
+  // NOTE: agent assignment is deferred until AFTER the duplicate check below, because
+  // resolveProjectAgent() atomically advances the weighted round-robin cursor. Resolving
+  // it here would let a duplicate lead consume a rotation slot and skip the next agent.
   // createdBy still requires a real user, so always resolve a system user for that.
   const projectId = await resolveProject(page_id, form_id);
-  const assignedTo = projectId ? await resolveProjectAgent(projectId) : null;
 
   const createdBy = await resolveSystemUser().catch((err) => {
     console.error('[META] Cannot resolve system user:', err.message);
@@ -232,7 +233,11 @@ const processLeadgenEvent = async (value) => {
     return;
   }
 
-  // 8. Create new lead
+  // 8. Genuinely new lead — NOW advance the weighted round-robin cursor and assign.
+  // assignedTo may be null (no eligible agent) — that's OK, the lead stays unassigned.
+  const assignedTo = projectId ? await resolveProjectAgent(projectId) : null;
+
+  // 9. Create new lead
   try {
     const lead = await Lead.create({
       name: fields.name,
