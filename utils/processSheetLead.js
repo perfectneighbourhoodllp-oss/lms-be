@@ -5,6 +5,7 @@ const notifyAssignment = require('./notifyAssignment');
 const notifyUnassigned = require('./notifyUnassigned');
 const cleanPhone = require('./cleanPhone');
 const resolveProjectAgent = require('./resolveProjectAgent');
+const { shouldRequireAcceptance, initialAcceptanceFields } = require('./leadAcceptance');
 
 /**
  * Fallback assignee — first active admin.
@@ -95,6 +96,9 @@ const processSheetLead = async (row, sheetConfig) => {
       return { status: 'duplicate', lead: existing };
     }
 
+    // Round-robin-assigned sheet leads need the agent to Accept (15-min reassign timer).
+    const acceptance = shouldRequireAcceptance(assignedTo) ? initialAcceptanceFields(assignedTo) : {};
+
     // Create new lead
     const lead = await Lead.create({
       name,
@@ -107,6 +111,7 @@ const processSheetLead = async (row, sheetConfig) => {
       assignedTo: assignedTo || null,
       createdBy,
       customFields: Object.keys(customFields).length ? customFields : undefined,
+      ...acceptance,
     });
 
     if (assignedTo) {

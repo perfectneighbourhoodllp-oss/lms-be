@@ -7,6 +7,7 @@ const errorHandler = require('./middleware/errorHandler');
 const startReminderJob = require('./jobs/reminderJob');
 const startSheetPollingJob = require('./jobs/sheetPollingJob');
 const startFollowUpReminderJob = require('./jobs/followUpReminderJob');
+const startLeadReassignmentJob = require('./jobs/leadReassignmentJob');
 const verifyMetaSignature = require('./middleware/verifyMetaSignature');
 
 const app = express();
@@ -69,6 +70,7 @@ if (process.env.NODE_ENV !== 'test') {
   startReminderJob();
   startSheetPollingJob();
   startFollowUpReminderJob();
+  startLeadReassignmentJob();
 }
 
 const PORT = process.env.PORT || 5000;

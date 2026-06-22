@@ -8,6 +8,7 @@ const notifyUnassigned = require('../utils/notifyUnassigned');
 const logActivity = require('../utils/logActivity');
 const cleanPhone = require('../utils/cleanPhone');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
+const { shouldRequireAcceptance, initialAcceptanceFields } = require('../utils/leadAcceptance');
 const Project = require('../models/Project');
 
 /* ─── Helpers ─────────────────────────────────────────────── */
@@ -237,6 +238,9 @@ const processLeadgenEvent = async (value) => {
   // assignedTo may be null (no eligible agent) — that's OK, the lead stays unassigned.
   const assignedTo = projectId ? await resolveProjectAgent(projectId) : null;
 
+  // Auto-assigned leads require the agent to Accept within 15 min (business hours only).
+  const acceptance = shouldRequireAcceptance(assignedTo) ? initialAcceptanceFields(assignedTo) : {};
+
   // 9. Create new lead
   try {
     const lead = await Lead.create({
@@ -251,6 +255,7 @@ const processLeadgenEvent = async (value) => {
       project: projectId || null,
       assignedTo: assignedTo || null,
       createdBy,
+      ...acceptance,
     });
 
     await WebhookLog.create({

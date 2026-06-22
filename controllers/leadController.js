@@ -6,6 +6,8 @@ const cleanPhone = require('../utils/cleanPhone');
 const createNotification = require('../utils/createNotification');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
 const notifyUnassigned = require('../utils/notifyUnassigned');
+const { shouldRequireAcceptance, initialAcceptanceFields } = require('../utils/leadAcceptance');
+const advancePendingLead = require('../utils/advancePendingLead');
 const Project = require('../models/Project');
 const { getManagerProjectFilter } = require('../utils/managerScope');
 
@@ -189,9 +191,13 @@ exports.createLead = async (req, res, next) => {
     // 3. If no project: fall back to creator
     // 4. If project but no eligible agent: leave null (admins/managers will be notified)
     let resolvedAssignee = assignedTo || null;
+    // Track whether this was an automatic round-robin assignment (vs an explicit
+    // pick or the creator fallback). Only auto-assignments require acceptance.
+    let autoAssigned = false;
 
     if (!resolvedAssignee && project) {
       resolvedAssignee = await resolveProjectAgent(project);
+      if (resolvedAssignee) autoAssigned = true;
       // If still null after trying project agents, intentionally keep null
     }
 
@@ -229,6 +235,13 @@ exports.createLead = async (req, res, next) => {
       return res.status(200).json({ lead: updated, duplicate: true });
     }
 
+    // Auto-assigned (round-robin) leads need the agent to Accept within 15 min
+    // during business hours; explicit/manual assignments do not.
+    const acceptance =
+      autoAssigned && shouldRequireAcceptance(resolvedAssignee)
+        ? initialAcceptanceFields(resolvedAssignee)
+        : {};
+
     const lead = await Lead.create({
       name,
       phone: cleaned,
@@ -241,6 +254,7 @@ exports.createLead = async (req, res, next) => {
       assignedTo: resolvedAssignee,
       createdBy: req.user.id,
       customFields: customFields || undefined,
+      ...acceptance,
     });
 
     const populated = await lead.populate([
@@ -285,6 +299,15 @@ exports.updateLead = async (req, res, next) => {
       // Sales can only update a restricted set of fields
       const { status, notes, followUpDate, lastContactedAt } = req.body;
       allowed = { status, notes, followUpDate, lastContactedAt };
+    }
+
+    // A manual reassignment is deliberate and does NOT require acceptance. Clear the
+    // pending-acceptance flow so the reassignment cron won't override the admin's choice.
+    const manualReassign =
+      allowed.assignedTo && String(allowed.assignedTo) !== String(existing.assignedTo);
+    if (manualReassign) {
+      allowed.acceptanceStatus = 'accepted';
+      allowed.acceptDeadline = null;
     }
 
     const lead = await Lead.findByIdAndUpdate(
@@ -443,6 +466,82 @@ exports.addRemark = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/leads/:id/accept
+ * The assigned agent accepts a pending auto-assigned lead, stopping the reassign timer.
+ * Atomic guard: only succeeds if the lead is still pending AND assigned to this user.
+ */
+exports.acceptLead = async (req, res, next) => {
+  try {
+    const lead = await Lead.findOneAndUpdate(
+      { _id: req.params.id, assignedTo: req.user.id, acceptanceStatus: 'pending' },
+      { $set: { acceptanceStatus: 'accepted', acceptedAt: new Date() } },
+      { new: true }
+    )
+      .populate('assignedTo', 'name email')
+      .populate('createdBy', 'name')
+      .populate('project', 'name developer')
+      .populate('remarks.addedBy', 'name');
+
+    if (!lead) {
+      return res.status(409).json({
+        message: 'This lead is no longer awaiting your acceptance (already accepted or reassigned).',
+      });
+    }
+
+    logActivity({
+      req,
+      action: 'lead.accept',
+      resource: 'lead',
+      resourceId: lead._id,
+      details: `Accepted lead "${lead.name}" (${lead.phone})`,
+    });
+
+    res.json(lead);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/leads/:id/reject
+ * The assigned agent declines a pending lead — it immediately moves to the next agent
+ * in the rotation (or escalates if nobody is left), without waiting out the 15-min timer.
+ */
+exports.rejectLead = async (req, res, next) => {
+  try {
+    // Only the current assignee can reject, and only while it's still pending.
+    const lead = await Lead.findOne({
+      _id: req.params.id,
+      assignedTo: req.user.id,
+      acceptanceStatus: 'pending',
+    })
+      .select('name phone project assignedTo triedAgents')
+      .lean();
+
+    if (!lead) {
+      return res.status(409).json({
+        message: 'This lead is no longer awaiting your acceptance (already accepted or reassigned).',
+      });
+    }
+
+    // Explicit reject → a sole eligible agent escalates (they don't want it), no re-arm.
+    const { action } = await advancePendingLead(lead, { now: new Date(), rearmSingleAgent: false });
+
+    logActivity({
+      req,
+      action: 'lead.reject',
+      resource: 'lead',
+      resourceId: lead._id,
+      details: `Declined lead "${lead.name}" (${lead.phone}) — ${action}`,
+    });
+
+    res.json({ action });
+  } catch (err) {
+    next(err);
+  }
+};
+
 /* ─── Bulk CSV Upload ──────────────────────────────────────── */
 
 exports.bulkUpload = async (req, res, next) => {
@@ -483,10 +582,12 @@ exports.bulkUpload = async (req, res, next) => {
       // - If project specified but no eligible agent → leave null (notify admins/managers)
       // - If no project → fall back to uploader
       let assignee = null;
+      let autoAssigned = false;
       if (rowProject) {
         assignee = await resolveProjectAgent(rowProject);
+        if (assignee) autoAssigned = true; // round-robin → requires acceptance
       } else {
-        assignee = req.user.id;
+        assignee = req.user.id; // fall back to uploader → no acceptance needed
       }
 
       const payload = {
@@ -510,6 +611,10 @@ exports.bulkUpload = async (req, res, next) => {
           await Lead.updateOne({ _id: existing._id }, { $set: updateSet });
           updated++;
         } else {
+          // Round-robin-assigned rows need the agent to Accept (15-min reassign timer).
+          if (autoAssigned && shouldRequireAcceptance(assignee)) {
+            Object.assign(payload, initialAcceptanceFields(assignee));
+          }
           const newLead = await Lead.create(payload);
           if (assignee) {
             notifyAssignment(assignee, newLead, req.user.id);

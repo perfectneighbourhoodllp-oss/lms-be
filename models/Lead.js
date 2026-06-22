@@ -34,12 +34,30 @@ const leadSchema = new mongoose.Schema(
     metaLeadId: { type: String, sparse: true, trim: true },
     metaAdName: { type: String, trim: true },
     metaFormId: { type: String, trim: true },
+    // ─── Lead acceptance (15-min accept-or-reassign for auto-assigned leads) ───
+    // 'not_required' — manual assignment or assigned outside business hours.
+    // 'pending'      — agent must Accept before acceptDeadline, else it reassigns.
+    // 'accepted'     — agent accepted; the lead is theirs.
+    // 'escalated'    — cycled through every eligible agent unaccepted; admins alerted.
+    acceptanceStatus: {
+      type: String,
+      enum: ['not_required', 'pending', 'accepted', 'escalated'],
+      default: 'not_required',
+    },
+    assignedAt: { type: Date }, // when the current pending assignment started
+    acceptDeadline: { type: Date }, // assignedAt + 15 min
+    acceptedAt: { type: Date },
+    reassignmentCount: { type: Number, default: 0 },
+    // Agents who have already been given this lead during the acceptance cycle.
+    triedAgents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   },
   { timestamps: true }
 );
 
 leadSchema.index({ assignedTo: 1, followUpDate: 1, status: 1 });
 leadSchema.index({ metaLeadId: 1 }, { sparse: true });
+// Drives the reassignment cron — find pending leads past their deadline cheaply.
+leadSchema.index({ acceptanceStatus: 1, acceptDeadline: 1 });
 
 // A lead is unique by phone + project. Same person can have separate leads
 // for different projects (each is a separate opportunity).

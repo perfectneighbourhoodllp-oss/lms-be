@@ -15,6 +15,8 @@ const {
   getOverdueLeads,
   getStats,
   exportLeads,
+  acceptLead,
+  rejectLead,
 } = require('../controllers/leadController');
 
 const upload = multer({
@@ -45,6 +47,8 @@ router.route('/:id')
   .delete(authorize('admin', 'manager'), deleteLead);
 
 router.post('/:id/remarks', addRemark);
+router.post('/:id/accept', acceptLead);
+router.post('/:id/reject', rejectLead);
 router.get('/:id/related', getRelatedLeads);
 
 module.exports = router;
