@@ -8,12 +8,18 @@ const {
   getAgentPerformance,
   setMyAvailability,
   getAgentProfileStats,
+  registerDeviceToken,
+  removeDeviceToken,
 } = require('../controllers/userController');
 
 router.use(protect);
 
 // Self-service availability toggle (any authenticated user)
 router.put('/me/availability', setMyAvailability);
+
+// Mobile push: register / unregister this device's FCM token
+router.post('/me/device-token', registerDeviceToken);
+router.delete('/me/device-token', removeDeviceToken);
 
 // Both admin and manager can list and create users
 router.get('/', getUsers);

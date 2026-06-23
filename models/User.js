@@ -13,6 +13,10 @@ const userSchema = new mongoose.Schema(
     // assignment but can still log in and work existing leads.
     isAvailable: { type: Boolean, default: true },
 
+    // FCM device tokens for mobile push notifications (one per installed device).
+    // Registered by the app on login; invalid tokens are pruned on send.
+    deviceTokens: { type: [String], default: [] },
+
     // Email-OTP login second factor (currently enforced only for role === 'admin').
     // Lifecycle:
     //   1. login() with valid password → server stores hash + expiry, emails OTP

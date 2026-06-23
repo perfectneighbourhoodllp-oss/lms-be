@@ -1,2 +1,8 @@
 node_modules/
 .env
+
+# Firebase service account (secret — never commit)
+serviceAccountKey.json
+firebase-service-account*.json
+*firebase-adminsdk*.json
+*-adminsdk-*.json

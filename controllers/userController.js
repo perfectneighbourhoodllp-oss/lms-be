@@ -246,6 +246,39 @@ exports.setMyAvailability = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/users/me/device-token — the mobile app registers its FCM token so the
+ * current user can receive push notifications. Idempotent (deduped via $addToSet).
+ */
+exports.registerDeviceToken = async (req, res, next) => {
+  try {
+    const { token } = req.body;
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ message: 'token (string) is required' });
+    }
+    await User.updateOne({ _id: req.user.id }, { $addToSet: { deviceTokens: token } });
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * DELETE /api/users/me/device-token — unregister a device token (logout / opt-out).
+ */
+exports.removeDeviceToken = async (req, res, next) => {
+  try {
+    const { token } = req.body;
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ message: 'token (string) is required' });
+    }
+    await User.updateOne({ _id: req.user.id }, { $pull: { deviceTokens: token } });
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
 /** PUT /api/users/:id/reset-password — admin resets a user's password */
 exports.resetPassword = async (req, res, next) => {
   try {

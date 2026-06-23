@@ -2,6 +2,7 @@ const User = require('../models/User');
 const Project = require('../models/Project');
 const transporter = require('../config/email');
 const createNotification = require('./createNotification');
+const sendPush = require('./sendPush');
 
 /**
  * Resolve the project name from either a populated `lead.project` or a raw
@@ -34,6 +35,13 @@ const notifyAssignment = async (agentId, lead, actorId) => {
       message: `${lead.name} (${lead.phone}) — ${lead.source || 'Other'}`,
       relatedLead: lead._id,
       actorId,
+    });
+
+    // Mobile push (best-effort; no-op unless PUSH_ENABLED + the agent has a device).
+    sendPush(agentId, {
+      title: 'New lead assigned',
+      body: `${lead.name} (${lead.phone}) — ${lead.source || 'Other'}`,
+      data: { type: 'lead.assigned', leadId: String(lead._id) },
     });
 
     const agent = await User.findById(agentId).lean();

@@ -19,6 +19,11 @@ connectDB();
 const allowedOrigins = [
   process.env.CLIENT_URL || 'http://localhost:5173',
   'http://localhost:5173',
+  // Native mobile app (Capacitor) webview origins
+  'capacitor://localhost',
+  'https://localhost',
+  'http://localhost',
+  'ionic://localhost',
 ];
 app.use(cors({
   origin: (origin, callback) => {
@@ -79,5 +84,14 @@ app.listen(PORT, () => {
   console.log(`📡 Meta webhook endpoint: POST /api/webhook/meta`);
   if (!process.env.META_APP_SECRET) {
     console.warn('⚠️  META_APP_SECRET not set — webhook signature verification will reject all requests');
+  }
+  // Push notification status (so you can see at a glance if it's configured)
+  const { getMessagingClient } = require('./config/firebase');
+  if (process.env.PUSH_ENABLED !== 'true') {
+    console.log('🔕 [PUSH] disabled — set PUSH_ENABLED=true to enable mobile notifications');
+  } else if (getMessagingClient()) {
+    console.log('🔔 [PUSH] enabled and ready');
+  } else {
+    console.warn('⚠️  [PUSH] PUSH_ENABLED=true but Firebase not ready — check FIREBASE_SERVICE_ACCOUNT');
   }
 });
