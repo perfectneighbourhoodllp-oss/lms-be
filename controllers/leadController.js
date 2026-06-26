@@ -6,6 +6,8 @@ const cleanPhone = require('../utils/cleanPhone');
 const createNotification = require('../utils/createNotification');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
 const notifyUnassigned = require('../utils/notifyUnassigned');
+const notifyBulkAssignment = require('../utils/notifyBulkAssignment');
+const User = require('../models/User');
 const { shouldRequireAcceptance, initialAcceptanceFields } = require('../utils/leadAcceptance');
 const advancePendingLead = require('../utils/advancePendingLead');
 const Project = require('../models/Project');
@@ -550,7 +552,47 @@ exports.bulkUpload = async (req, res, next) => {
 
     // Optional: project ID passed as query param for bulk upload
     const projectId = req.query.project || null;
-    let projectAgentCache = null; // resolved lazily per project
+
+    // Optional: assign EVERY uploaded lead to one specific agent (overrides round-robin).
+    // Deliberate assignment → no 15-min acceptance flow.
+    let assignToId = null;
+    if (req.query.assignTo) {
+      const target = await User.findOne({ _id: req.query.assignTo, isActive: true })
+        .select('_id')
+        .lean()
+        .catch(() => null);
+      if (!target) {
+        return res.status(400).json({ message: 'Selected agent not found or inactive' });
+      }
+      assignToId = String(target._id);
+    }
+
+    // Tally assignments so we can send ONE summary notification per agent at the end
+    // (instead of one email/push per lead — which would spam inboxes + hit rate limits).
+    const assignedCounts = {}; // { agentId: count } for newly created leads
+
+    // Flexible CSV header matching — case/space/underscore/hyphen-insensitive, with
+    // common aliases. So "Full Name", "Mobile No", "Phone Number", "Email Address" all work.
+    const ALIASES = {
+      name: ['name', 'full name', 'lead name', 'customer name', 'client name'],
+      phone: ['phone', 'phone number', 'mobile', 'mobile number', 'mobile no', 'contact', 'contact number', 'contact no', 'whatsapp', 'whatsapp number', 'number'],
+      email: ['email', 'email address', 'e-mail', 'mail'],
+      source: ['source', 'lead source'],
+      notes: ['notes', 'note', 'remark', 'remarks', 'comment', 'comments', 'message'],
+      project: ['project_id', 'project id', 'project', 'projectid'],
+    };
+    const normKey = (s) => String(s).trim().toLowerCase().replace(/[\s_-]+/g, '');
+    const fieldGetter = (row) => {
+      const map = {};
+      for (const k of Object.keys(row)) map[normKey(k)] = row[k];
+      return (key) => {
+        for (const alias of ALIASES[key]) {
+          const v = map[normKey(alias)];
+          if (v != null && String(v).trim() !== '') return String(v).trim();
+        }
+        return '';
+      };
+    };
 
     let records;
     try {
@@ -567,10 +609,10 @@ exports.bulkUpload = async (req, res, next) => {
     const errors = [];
 
     for (const row of records) {
-      const rawPhone = row.phone || row.Phone || row.PHONE || '';
-      const name = (row.name || row.Name || row.NAME || '').trim();
-      const phone = cleanPhone(rawPhone);
-      const rowProject = row.project_id || projectId;
+      const get = fieldGetter(row);
+      const name = get('name');
+      const phone = cleanPhone(get('phone'));
+      const rowProject = get('project') || projectId;
 
       if (!name || !phone) {
         errors.push(`Skipped — missing name or phone: ${JSON.stringify(row)}`);
@@ -578,12 +620,15 @@ exports.bulkUpload = async (req, res, next) => {
       }
 
       // Resolve assignee for this row.
-      // - If project specified and has an eligible agent → that agent
-      // - If project specified but no eligible agent → leave null (notify admins/managers)
-      // - If no project → fall back to uploader
+      // - assignTo override → that agent (no acceptance; deliberate)
+      // - else if project has an eligible agent → round-robin (requires acceptance)
+      // - else if project but no eligible agent → null (notify admins/managers)
+      // - else (no project) → uploader
       let assignee = null;
       let autoAssigned = false;
-      if (rowProject) {
+      if (assignToId) {
+        assignee = assignToId;
+      } else if (rowProject) {
         assignee = await resolveProjectAgent(rowProject);
         if (assignee) autoAssigned = true; // round-robin → requires acceptance
       } else {
@@ -593,9 +638,9 @@ exports.bulkUpload = async (req, res, next) => {
       const payload = {
         name,
         phone,
-        email: row.email || row.Email || '',
-        source: row.source || row.Source || 'Other',
-        notes: row.notes || row.Notes || '',
+        email: get('email'),
+        source: get('source') || 'Other',
+        notes: get('notes'),
         project: rowProject || null,
         assignedTo: assignee,
         createdBy: req.user.id,
@@ -617,7 +662,8 @@ exports.bulkUpload = async (req, res, next) => {
           }
           const newLead = await Lead.create(payload);
           if (assignee) {
-            notifyAssignment(assignee, newLead, req.user.id);
+            // Defer notification — tally now, send ONE summary per agent after the loop.
+            assignedCounts[String(assignee)] = (assignedCounts[String(assignee)] || 0) + 1;
           } else {
             const project = rowProject ? await Project.findById(rowProject).select('name').lean() : null;
             notifyUnassigned({ ...newLead.toObject(), project });
@@ -627,6 +673,11 @@ exports.bulkUpload = async (req, res, next) => {
       } catch (rowErr) {
         errors.push(`Error for ${name} (${phone}): ${rowErr.message}`);
       }
+    }
+
+    // One summary notification per agent (not per lead) — avoids inbox/push spam.
+    for (const [agentId, count] of Object.entries(assignedCounts)) {
+      notifyBulkAssignment(agentId, count, req.user.id);
     }
 
     logActivity({
