@@ -18,6 +18,9 @@ const leadSchema = new mongoose.Schema(
     followUpDate: { type: Date },
     followUpNotifiedAt: { type: Date },
     lastContactedAt: { type: Date },
+    // 'live' = real-time inbound (Meta/web/sheet/manual); 'database' = bulk-uploaded
+    // cold data. Database leads skip the 15-min accept flow and the speed-to-contact metric.
+    leadType: { type: String, enum: ['live', 'database'], default: 'live' },
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project' },

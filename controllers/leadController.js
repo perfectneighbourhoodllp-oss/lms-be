@@ -661,20 +661,15 @@ exports.bulkUpload = async (req, res, next) => {
         continue;
       }
 
-      // Resolve assignee for this row.
-      // - assignTo override → that agent (no acceptance; deliberate)
-      // - else if project has an eligible agent → round-robin (requires acceptance)
-      // - else if project but no eligible agent → null (notify admins/managers)
-      // - else (no project) → uploader
+      // Bulk-uploaded leads are cold "database" leads — assigned (round-robin or to the
+      // chosen agent) but WITHOUT the 15-min accept/reassign urgency that live leads get.
       let assignee = null;
-      let autoAssigned = false;
       if (assignToId) {
         assignee = assignToId;
       } else if (rowProject) {
         assignee = await resolveProjectAgent(rowProject);
-        if (assignee) autoAssigned = true; // round-robin → requires acceptance
       } else {
-        assignee = req.user.id; // fall back to uploader → no acceptance needed
+        assignee = req.user.id; // fall back to uploader
       }
 
       const payload = {
@@ -686,6 +681,7 @@ exports.bulkUpload = async (req, res, next) => {
         project: rowProject || null,
         assignedTo: assignee,
         createdBy: req.user.id,
+        leadType: 'database', // cold bulk data
       };
 
       try {
@@ -698,10 +694,7 @@ exports.bulkUpload = async (req, res, next) => {
           await Lead.updateOne({ _id: existing._id }, { $set: updateSet });
           updated++;
         } else {
-          // Round-robin-assigned rows need the agent to Accept (15-min reassign timer).
-          if (autoAssigned && shouldRequireAcceptance(assignee)) {
-            Object.assign(payload, initialAcceptanceFields(assignee));
-          }
+          // Database leads skip the accept/reassign flow — just create + assign.
           const newLead = await Lead.create(payload);
           if (assignee) {
             // Defer notification — tally now, send ONE summary per agent after the loop.

@@ -75,7 +75,13 @@ async function computeAgentReport(start, end) {
         { $group: { _id: '$assignedTo', n: { $sum: 1 } } },
       ]),
       // Leads created in range that have been contacted — for speed-to-first-contact.
-      Lead.find({ createdAt: range, assignedTo: { $ne: null }, 'contactLog.0': { $exists: true } })
+      // Exclude cold "database" (bulk) leads — speed-to-lead is meaningless for them.
+      Lead.find({
+        createdAt: range,
+        assignedTo: { $ne: null },
+        leadType: { $ne: 'database' },
+        'contactLog.0': { $exists: true },
+      })
         .select('assignedTo createdAt contactLog')
         .lean(),
       User.find({ isActive: true, role: { $in: ['sales', 'manager'] } })
