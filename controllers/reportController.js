@@ -2,14 +2,17 @@ const Lead = require('../models/Lead');
 const ActivityLog = require('../models/ActivityLog');
 const User = require('../models/User');
 
-// Parse from/to (YYYY-MM-DD or ISO) into an inclusive [start, end] range.
-// Defaults to "today" when nothing is passed.
+// from/to are 'YYYY-MM-DD' IST calendar days (as the client sends them). Build
+// EXPLICIT IST boundaries so the report's today/week/month matches IST regardless
+// of the server's timezone (Render runs UTC, which previously shifted the window).
+function istToday() {
+  return new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
 function parseRange(from, to) {
-  const now = new Date();
-  const start = from ? new Date(from) : new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  start.setHours(0, 0, 0, 0);
-  const end = to ? new Date(to) : new Date(start);
-  end.setHours(23, 59, 59, 999);
+  const startDay = (from || istToday()).slice(0, 10);
+  const endDay = (to || startDay).slice(0, 10);
+  const start = new Date(`${startDay}T00:00:00.000+05:30`);
+  const end = new Date(`${endDay}T23:59:59.999+05:30`);
   return { start, end };
 }
 
@@ -40,19 +43,13 @@ function businessMinutesBetween(startUtc, endUtc) {
 }
 
 /**
- * GET /api/reports/agents?from=YYYY-MM-DD&to=YYYY-MM-DD  (admin/manager)
- * Per-agent activity over the date range:
- *   - leadsAssigned: leads that entered the system in range, currently assigned to them
- *   - callsMade:     click-to-call events logged (ActivityLog 'lead.call')
- *   - followUpsDone: remarks added (ActivityLog 'lead.remark')
- *   - closed:        leads moved to 'Closed' in range
+ * Core aggregation — per-agent activity between two Date instants.
+ * Reused by the HTTP endpoint and the daily email job. Returns { from, to, agents, totals }.
  */
-exports.getAgentReport = async (req, res, next) => {
-  try {
-    const { start, end } = parseRange(req.query.from, req.query.to);
-    const range = { $gte: start, $lte: end };
+async function computeAgentReport(start, end) {
+  const range = { $gte: start, $lte: end };
 
-    const [assigned, calls, whatsapps, followups, closed, speedLeads, users] = await Promise.all([
+  const [assigned, calls, whatsapps, followups, closed, speedLeads, users] = await Promise.all([
       Lead.aggregate([
         { $match: { assignedTo: { $ne: null }, createdAt: range } },
         { $group: { _id: '$assignedTo', n: { $sum: 1 } } },
@@ -143,9 +140,69 @@ exports.getAgentReport = async (req, res, next) => {
       (t, s) => ({ sum: t.sum + s.sum, count: t.count + s.count }),
       { sum: 0, count: 0 }
     );
-    totals.avgFirstContactMins = teamSpeed.count ? Math.round(teamSpeed.sum / teamSpeed.count) : null;
+  totals.avgFirstContactMins = teamSpeed.count ? Math.round(teamSpeed.sum / teamSpeed.count) : null;
 
-    res.json({ from: start, to: end, agents, totals });
+  return { from: start, to: end, agents, totals };
+}
+
+/**
+ * GET /api/reports/agents?from=YYYY-MM-DD&to=YYYY-MM-DD  (admin/manager)
+ */
+exports.getAgentReport = async (req, res, next) => {
+  try {
+    const { start, end } = parseRange(req.query.from, req.query.to);
+    const report = await computeAgentReport(start, end);
+    res.json(report);
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports.computeAgentReport = computeAgentReport;
+module.exports.parseRange = parseRange;
+
+const ReportSetting = require('../models/ReportSetting');
+const sendReportEmail = require('../utils/sendReportEmail');
+
+// Basic email shape check + dedupe + normalise.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const cleanEmails = (list = []) =>
+  [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter((e) => EMAIL_RE.test(e)))];
+
+/** GET /api/reports/settings  (admin) — the daily-email config. */
+exports.getReportSettings = async (req, res, next) => {
+  try {
+    const s = await ReportSetting.getSingleton();
+    res.json({ recipients: s.recipients, dailyEmailEnabled: s.dailyEmailEnabled });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** PUT /api/reports/settings  (admin) — body: { recipients: string[], dailyEmailEnabled: bool } */
+exports.updateReportSettings = async (req, res, next) => {
+  try {
+    const s = await ReportSetting.getSingleton();
+    if (Array.isArray(req.body.recipients)) s.recipients = cleanEmails(req.body.recipients);
+    if (typeof req.body.dailyEmailEnabled === 'boolean') s.dailyEmailEnabled = req.body.dailyEmailEnabled;
+    await s.save();
+    res.json({ recipients: s.recipients, dailyEmailEnabled: s.dailyEmailEnabled });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** POST /api/reports/send-test  (admin) — email today's report to the configured recipients now. */
+exports.sendTestReport = async (req, res, next) => {
+  try {
+    const s = await ReportSetting.getSingleton();
+    if (!s.recipients.length) {
+      return res.status(400).json({ message: 'Add at least one recipient email first' });
+    }
+    const { start, end } = parseRange(); // today (IST)
+    const report = await computeAgentReport(start, end);
+    await sendReportEmail(report, s.recipients, 'Daily (test)');
+    res.json({ success: true, sentTo: s.recipients });
   } catch (err) {
     next(err);
   }
