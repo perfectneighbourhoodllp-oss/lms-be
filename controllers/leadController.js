@@ -161,7 +161,8 @@ exports.getLead = async (req, res, next) => {
       .populate('assignedTo', 'name email')
       .populate('createdBy', 'name')
       .populate('project', 'name developer')
-      .populate('remarks.addedBy', 'name');
+      .populate('remarks.addedBy', 'name')
+      .populate('contactLog.by', 'name');
 
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
 
@@ -463,6 +464,47 @@ exports.addRemark = async (req, res, next) => {
       .populate('remarks.addedBy', 'name');
 
     res.status(201).json(updated);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/leads/:id/log-contact   body: { channel: 'call' | 'whatsapp' }
+ * (alias: POST /api/leads/:id/log-call → channel defaults to 'call')
+ * Records a contact attempt: appends to the lead's contactLog, stamps
+ * lastContactedAt, and writes an activity ('lead.call' / 'lead.whatsapp')
+ * so calls can be counted in reports.
+ */
+exports.logCall = async (req, res, next) => {
+  try {
+    const channel = req.body?.channel === 'whatsapp' ? 'whatsapp' : 'call';
+    const lead = await Lead.findById(req.params.id).select('name assignedTo').lean();
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+
+    // Sales can only log contact on their own leads; admin/manager on any.
+    if (req.user.role === 'sales' && String(lead.assignedTo) !== String(req.user.id)) {
+      return res.status(403).json({ message: 'Not authorised' });
+    }
+
+    const now = new Date();
+    await Lead.updateOne(
+      { _id: lead._id },
+      {
+        $set: { lastContactedAt: now },
+        $push: { contactLog: { type: channel, at: now, by: req.user.id } },
+      }
+    );
+
+    logActivity({
+      req,
+      action: channel === 'whatsapp' ? 'lead.whatsapp' : 'lead.call',
+      resource: 'lead',
+      resourceId: lead._id,
+      details: `${channel === 'whatsapp' ? 'WhatsApp' : 'Called'} "${lead.name}"`,
+    });
+
+    res.json({ success: true });
   } catch (err) {
     next(err);
   }

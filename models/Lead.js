@@ -28,6 +28,14 @@ const leadSchema = new mongoose.Schema(
         createdAt: { type: Date, default: Date.now },
       },
     ],
+    // Contact attempts — appended whenever an agent taps Call or WhatsApp on this lead.
+    contactLog: [
+      {
+        type: { type: String, enum: ['call', 'whatsapp'], required: true },
+        at: { type: Date, default: Date.now },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      },
+    ],
     // Arbitrary custom fields imported from sheets (e.g. occupation, city, budget)
     customFields: { type: mongoose.Schema.Types.Mixed, default: {} },
     // Meta Lead Ads integration

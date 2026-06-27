@@ -17,6 +17,7 @@ const {
   exportLeads,
   acceptLead,
   rejectLead,
+  logCall,
 } = require('../controllers/leadController');
 
 const upload = multer({
@@ -49,6 +50,8 @@ router.route('/:id')
 router.post('/:id/remarks', addRemark);
 router.post('/:id/accept', acceptLead);
 router.post('/:id/reject', rejectLead);
+router.post('/:id/log-call', logCall);
+router.post('/:id/log-contact', logCall);
 router.get('/:id/related', getRelatedLeads);
 
 module.exports = router;
