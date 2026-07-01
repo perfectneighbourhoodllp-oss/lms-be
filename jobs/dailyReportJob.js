@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const ReportSetting = require('../models/ReportSetting');
-const { computeAgentReport, parseRange } = require('../controllers/reportController');
+const { computeAgentReport, parseRange, filterReportForEmail } = require('../controllers/reportController');
 const sendReportEmail = require('../utils/sendReportEmail');
 
 /**
@@ -17,7 +17,8 @@ const startDailyReportJob = () => {
 
         const { start, end } = parseRange(); // today (IST)
         const report = await computeAgentReport(start, end);
-        await sendReportEmail(report, s.recipients, 'Daily');
+        const emailReport = filterReportForEmail(report, s.emailExcludedAgents || []);
+        await sendReportEmail(emailReport, s.recipients, 'Daily');
       } catch (err) {
         console.error('[REPORT] Daily report job failed:', err.message);
       }

@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Lead = require('../models/Lead');
 const ActivityLog = require('../models/ActivityLog');
 const User = require('../models/User');
@@ -158,14 +159,52 @@ exports.getAgentReport = async (req, res, next) => {
   try {
     const { start, end } = parseRange(req.query.from, req.query.to);
     const report = await computeAgentReport(start, end);
+    // Annotate each agent with whether they're currently excluded from the email,
+    // so the Reports page can render the per-agent mail toggle in the right state.
+    const s = await ReportSetting.getSingleton();
+    const ex = new Set((s.emailExcludedAgents || []).map(String));
+    report.agents = report.agents.map((a) => ({ ...a, emailExcluded: ex.has(String(a.agentId)) }));
     res.json(report);
   } catch (err) {
     next(err);
   }
 };
 
+/**
+ * Return a copy of the report with the excluded agents removed and totals
+ * recomputed. Used for the email paths only — the Reports page still shows everyone.
+ * Weighted avg first-contact is rebuilt from each agent's (avg × sample) = its minute-sum.
+ */
+function filterReportForEmail(report, excludedIds = []) {
+  const ex = new Set(excludedIds.map(String));
+  const agents = report.agents.filter((a) => !ex.has(String(a.agentId)));
+
+  const totals = agents.reduce(
+    (t, r) => ({
+      leadsAssigned: t.leadsAssigned + r.leadsAssigned,
+      leadsCalled: t.leadsCalled + r.leadsCalled,
+      leadsWhatsapped: t.leadsWhatsapped + r.leadsWhatsapped,
+      followUpsDone: t.followUpsDone + r.followUpsDone,
+      closed: t.closed + r.closed,
+    }),
+    { leadsAssigned: 0, leadsCalled: 0, leadsWhatsapped: 0, followUpsDone: 0, closed: 0 }
+  );
+
+  let spSum = 0, spCount = 0;
+  for (const a of agents) {
+    if (a.avgFirstContactMins != null && a.firstContactSample) {
+      spSum += a.avgFirstContactMins * a.firstContactSample;
+      spCount += a.firstContactSample;
+    }
+  }
+  totals.avgFirstContactMins = spCount ? Math.round(spSum / spCount) : null;
+
+  return { ...report, agents, totals };
+}
+
 module.exports.computeAgentReport = computeAgentReport;
 module.exports.parseRange = parseRange;
+module.exports.filterReportForEmail = filterReportForEmail;
 
 const ReportSetting = require('../models/ReportSetting');
 const sendReportEmail = require('../utils/sendReportEmail');
@@ -207,8 +246,36 @@ exports.sendTestReport = async (req, res, next) => {
     }
     const { start, end } = parseRange(); // today (IST)
     const report = await computeAgentReport(start, end);
-    await sendReportEmail(report, s.recipients, 'Daily (test)');
+    const emailReport = filterReportForEmail(report, s.emailExcludedAgents || []);
+    await sendReportEmail(emailReport, s.recipients, 'Daily (test)');
     res.json({ success: true, sentTo: s.recipients });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PATCH /api/reports/agent-email/:agentId  (admin) — body: { included: bool }
+ * Toggle whether an agent's row appears in the emailed report. `included: false`
+ * adds them to the exclusion list; `true` removes them. No effect on the Reports page.
+ */
+exports.setAgentEmailInclusion = async (req, res, next) => {
+  try {
+    const { agentId } = req.params;
+    const { included } = req.body;
+    if (!mongoose.Types.ObjectId.isValid(agentId)) {
+      return res.status(400).json({ message: 'Invalid agent id' });
+    }
+    if (typeof included !== 'boolean') {
+      return res.status(400).json({ message: 'included (boolean) is required' });
+    }
+    const s = await ReportSetting.getSingleton();
+    const set = new Set((s.emailExcludedAgents || []).map(String));
+    if (included) set.delete(String(agentId));
+    else set.add(String(agentId));
+    s.emailExcludedAgents = [...set];
+    await s.save();
+    res.json({ agentId, emailExcluded: !included });
   } catch (err) {
     next(err);
   }
