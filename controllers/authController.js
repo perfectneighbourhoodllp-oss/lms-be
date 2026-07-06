@@ -14,7 +14,10 @@ const signToken = (user) =>
 
 // Roles that require email-OTP second factor after password.
 // Sales and managers get a JWT directly after password validation.
-const OTP_REQUIRED_ROLES = ['admin'];
+// Gated behind ADMIN_LOGIN_OTP — set it to 'true' in the env to re-enable
+// the admin OTP step. Off by default, so admins log in with password only.
+const OTP_REQUIRED_ROLES =
+  process.env.ADMIN_LOGIN_OTP === 'true' ? ['admin'] : [];
 const OTP_TTL_MS = 10 * 60 * 1000;        // 10 minutes
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds between resends
 const OTP_MAX_ATTEMPTS = 5;
