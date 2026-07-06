@@ -65,12 +65,16 @@ const todayRange = () => {
 
 exports.getLeads = async (req, res, next) => {
   try {
-    const { status, source, search, assignedTo, project, page, limit,
+    const { status, source, search, assignedTo, project, page, limit, leadType,
             createdFrom, createdTo, followUpFrom, followUpTo, hasFollowUp, overdue } = req.query;
     const filter = await buildRoleFilter(req.user);
 
     if (status) filter.status = status;
     if (source) filter.source = source;
+    // 'database' → bulk-uploaded cold data. 'live' includes legacy leads that
+    // predate the leadType field (field absent), so match "not database".
+    if (leadType === 'database') filter.leadType = 'database';
+    else if (leadType === 'live') filter.leadType = { $ne: 'database' };
     // Sales users are locked to their own leads (set by buildRoleFilter).
     // Don't let them override assignedTo via query params.
     if (req.user.role !== 'sales') {
@@ -595,6 +599,11 @@ exports.bulkUpload = async (req, res, next) => {
     // Optional: project ID passed as query param for bulk upload
     const projectId = req.query.project || null;
 
+    // Which bucket these rows land in. Defaults to 'database' (cold bulk data) —
+    // uploader can tick "live leads" in the UI to send them to the real pipeline.
+    // Either way, bulk uploads skip the 15-min accept/reassign flow (assign only).
+    const uploadLeadType = req.query.leadType === 'live' ? 'live' : 'database';
+
     // Optional: assign EVERY uploaded lead to one specific agent (overrides round-robin).
     // Deliberate assignment → no 15-min acceptance flow.
     let assignToId = null;
@@ -681,7 +690,7 @@ exports.bulkUpload = async (req, res, next) => {
         project: rowProject || null,
         assignedTo: assignee,
         createdBy: req.user.id,
-        leadType: 'database', // cold bulk data
+        leadType: uploadLeadType, // 'database' (cold) by default, or 'live' if chosen
       };
 
       try {
@@ -787,8 +796,13 @@ exports.getStats = async (req, res, next) => {
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
 
-    const [total, todayFollowups, overdue, closedMonth, byStatus] = await Promise.all([
-      Lead.countDocuments(baseFilter),
+    // 'live' = real pipeline (excludes bulk-uploaded cold data); legacy leads
+    // without a leadType field count as live. 'database' = cold bulk uploads.
+    const liveFilter = { ...baseFilter, leadType: { $ne: 'database' } };
+
+    const [total, database, todayFollowups, overdue, closedMonth, byStatus] = await Promise.all([
+      Lead.countDocuments(liveFilter),
+      Lead.countDocuments({ ...baseFilter, leadType: 'database' }),
       Lead.countDocuments({ ...baseFilter, followUpDate: { $gte: start, $lte: end } }),
       Lead.countDocuments({ ...baseFilter, followUpDate: { $lt: start }, status: { $nin: ['Closed', 'Not Interested', 'Dead'] } }),
       Lead.countDocuments({ ...baseFilter, status: 'Closed', updatedAt: { $gte: monthStart } }),
@@ -799,7 +813,7 @@ exports.getStats = async (req, res, next) => {
       ]),
     ]);
 
-    res.json({ total, todayFollowups, overdue, closedMonth, byStatus });
+    res.json({ total, database, todayFollowups, overdue, closedMonth, byStatus });
   } catch (err) {
     next(err);
   }
