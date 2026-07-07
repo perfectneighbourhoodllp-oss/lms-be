@@ -2,6 +2,7 @@ const router = require('express').Router();
 const { protect, authorize } = require('../middleware/auth');
 const {
   getAgentReport,
+  getMyReport,
   getReportSettings,
   updateReportSettings,
   sendTestReport,
@@ -9,6 +10,9 @@ const {
 } = require('../controllers/reportController');
 
 router.use(protect);
+
+// Personal report — any authenticated user, scoped to their own metrics.
+router.get('/me', getMyReport);
 
 router.get('/agents', authorize('admin', 'manager'), getAgentReport);
 

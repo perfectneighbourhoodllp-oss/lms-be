@@ -1,7 +1,21 @@
 const mongoose = require('mongoose');
 
 const SOURCES = ['Instagram', 'Ads', 'Referral', 'Walk-in', 'Website', 'Database', 'Other'];
-const STATUSES = ['New', 'Called', 'RNR', 'Interested', 'Webinar', 'Site Visit', 'Closed', 'Not Interested', 'Dead'];
+const STATUSES = ['New', 'Called', 'RNR', 'Follow Up', 'Interested', 'Webinar', 'Site Visit', 'Cross Selling', 'Closed', 'Not Interested', 'Dead'];
+// Qualitative labels a lead can carry (multiple at once). Curated preset so the
+// values stay consistent and filterable — sales agents pick from this list.
+const TAGS = [
+  'Low Budget',
+  'Budget Mismatch',
+  'Wants Different Config',
+  'Location Mismatch',
+  'Resale Only',
+  'Rental Only',
+  'Not Ready - Timeline',
+  'Investor',
+  'NRI',
+  'Loan Required',
+];
 
 const leadSchema = new mongoose.Schema(
   {
@@ -14,6 +28,8 @@ const leadSchema = new mongoose.Schema(
     email: { type: String, trim: true, lowercase: true },
     source: { type: String, enum: SOURCES, default: 'Other' },
     status: { type: String, enum: STATUSES, default: 'New' },
+    // Qualitative labels (e.g. 'Low Budget', 'Wants Different Config'). Multiple allowed.
+    tags: { type: [{ type: String, enum: TAGS }], default: [] },
     notes: { type: String, trim: true },
     followUpDate: { type: Date },
     followUpNotifiedAt: { type: Date },
@@ -37,6 +53,16 @@ const leadSchema = new mongoose.Schema(
         type: { type: String, enum: ['call', 'whatsapp'], required: true },
         at: { type: Date, default: Date.now },
         by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      },
+    ],
+    // Status change history — appended whenever the lead's status changes.
+    // `from` is null for the very first change on a lead created before this existed.
+    statusLog: [
+      {
+        from: { type: String },
+        to: { type: String, required: true },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: { type: Date, default: Date.now },
       },
     ],
     // Arbitrary custom fields imported from sheets (e.g. occupation, city, budget)
@@ -88,3 +114,4 @@ Lead.collection.dropIndex('phone_1').catch((err) => {
 module.exports = Lead;
 module.exports.SOURCES = SOURCES;
 module.exports.STATUSES = STATUSES;
+module.exports.TAGS = TAGS;

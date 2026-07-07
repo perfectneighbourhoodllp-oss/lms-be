@@ -171,6 +171,37 @@ exports.getAgentReport = async (req, res, next) => {
 };
 
 /**
+ * GET /api/reports/me?from=YYYY-MM-DD&to=YYYY-MM-DD  (any authenticated user)
+ *
+ * A sales agent's personal report — their own metrics only, never anyone else's.
+ * Reuses the same aggregation as the team report, then picks out the caller's row.
+ */
+exports.getMyReport = async (req, res, next) => {
+  try {
+    const { start, end } = parseRange(req.query.from, req.query.to);
+    const report = await computeAgentReport(start, end);
+    const mine = report.agents.find((a) => String(a.agentId) === String(req.user.id));
+    // Fallback zero-row (e.g. an admin who isn't in the sales/manager roster).
+    const agent = mine || {
+      agentId: String(req.user.id),
+      name: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      leadsAssigned: 0,
+      leadsCalled: 0,
+      leadsWhatsapped: 0,
+      followUpsDone: 0,
+      closed: 0,
+      avgFirstContactMins: null,
+      firstContactSample: 0,
+    };
+    res.json({ from: start, to: end, agent });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * Return a copy of the report with the excluded agents removed and totals
  * recomputed. Used for the email paths only — the Reports page still shows everyone.
  * Weighted avg first-contact is rebuilt from each agent's (avg × sample) = its minute-sum.

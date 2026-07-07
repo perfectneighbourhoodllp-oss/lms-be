@@ -65,12 +65,14 @@ const todayRange = () => {
 
 exports.getLeads = async (req, res, next) => {
   try {
-    const { status, source, search, assignedTo, project, page, limit, leadType,
+    const { status, source, search, assignedTo, project, page, limit, leadType, tag,
             createdFrom, createdTo, followUpFrom, followUpTo, hasFollowUp, overdue } = req.query;
     const filter = await buildRoleFilter(req.user);
 
     if (status) filter.status = status;
     if (source) filter.source = source;
+    // Tag filter — matches leads carrying this tag (tags is an array).
+    if (tag) filter.tags = tag;
     // 'database' → bulk-uploaded cold data. 'live' includes legacy leads that
     // predate the leadType field (field absent), so match "not database".
     if (leadType === 'database') filter.leadType = 'database';
@@ -141,6 +143,7 @@ exports.getLeads = async (req, res, next) => {
         .populate('createdBy', 'name')
         .populate('project', 'name developer')
         .populate('remarks.addedBy', 'name')
+        .populate('statusLog.by', 'name')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(perPage)
@@ -166,7 +169,8 @@ exports.getLead = async (req, res, next) => {
       .populate('createdBy', 'name')
       .populate('project', 'name developer')
       .populate('remarks.addedBy', 'name')
-      .populate('contactLog.by', 'name');
+      .populate('contactLog.by', 'name')
+      .populate('statusLog.by', 'name');
 
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
 
@@ -184,7 +188,7 @@ exports.getLead = async (req, res, next) => {
 
 exports.createLead = async (req, res, next) => {
   try {
-    const { name, phone, email, source, status, notes, followUpDate, assignedTo, project, customFields } = req.body;
+    const { name, phone, email, source, status, notes, followUpDate, assignedTo, project, customFields, tags } = req.body;
 
     if (!name || !phone) {
       return res.status(400).json({ message: 'name and phone are required' });
@@ -255,6 +259,7 @@ exports.createLead = async (req, res, next) => {
       email,
       source,
       status: status || 'New',
+      tags: Array.isArray(tags) ? tags : [],
       notes,
       followUpDate,
       project: project || null,
@@ -295,17 +300,18 @@ exports.updateLead = async (req, res, next) => {
   try {
     let allowed = req.body;
 
-    // Capture previous assignee to detect reassignment
-    const existing = await Lead.findById(req.params.id).select('assignedTo');
+    // Capture previous assignee + status to detect reassignment / status changes
+    const existing = await Lead.findById(req.params.id).select('assignedTo status');
     if (!existing) return res.status(404).json({ message: 'Lead not found' });
 
     if (req.user.role === 'sales') {
       if (String(existing.assignedTo) !== String(req.user.id)) {
         return res.status(403).json({ message: 'Not authorised' });
       }
-      // Sales can only update a restricted set of fields
-      const { status, notes, followUpDate, lastContactedAt } = req.body;
-      allowed = { status, notes, followUpDate, lastContactedAt };
+      // Sales can only update a restricted set of fields (tags included — they
+      // qualify their own leads).
+      const { status, notes, followUpDate, lastContactedAt, tags } = req.body;
+      allowed = { status, notes, followUpDate, lastContactedAt, tags };
     }
 
     // A manual reassignment is deliberate and does NOT require acceptance. Clear the
@@ -317,13 +323,27 @@ exports.updateLead = async (req, res, next) => {
       allowed.acceptDeadline = null;
     }
 
+    // Record a status-change entry when the status actually changes.
+    const update = { $set: allowed };
+    if (allowed.status && allowed.status !== existing.status) {
+      update.$push = {
+        statusLog: {
+          from: existing.status,
+          to: allowed.status,
+          by: req.user.id,
+          at: new Date(),
+        },
+      };
+    }
+
     const lead = await Lead.findByIdAndUpdate(
       req.params.id,
-      { $set: allowed },
+      update,
       { new: true, runValidators: true }
     )
       .populate('assignedTo', 'name email')
-      .populate('project', 'name developer');
+      .populate('project', 'name developer')
+      .populate('statusLog.by', 'name');
 
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
 
