@@ -8,19 +8,22 @@ const notifyUnassigned = require('../utils/notifyUnassigned');
 const logActivity = require('../utils/logActivity');
 const cleanPhone = require('../utils/cleanPhone');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
+const rotateAgentInPool = require('../utils/rotateAgentInPool');
 const { shouldRequireAcceptance, initialAcceptanceFields } = require('../utils/leadAcceptance');
 const Project = require('../models/Project');
+const { resolvePageContext } = require('./metaOAuthController');
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
 /**
  * Call Meta Graph API to get full lead details.
+ * Uses the connected Page's token when available, else the env token.
  * Returns the parsed JSON or throws.
  */
-const fetchMetaLead = (leadgenId) =>
+const fetchMetaLead = (leadgenId, pageToken) =>
   new Promise((resolve, reject) => {
-    const token = process.env.META_ACCESS_TOKEN;
-    if (!token) return reject(new Error('META_ACCESS_TOKEN not configured'));
+    const token = pageToken || process.env.META_ACCESS_TOKEN;
+    if (!token) return reject(new Error('No Meta access token — connect a Page or set META_ACCESS_TOKEN'));
 
     const path = `/v19.0/${leadgenId}?fields=field_data,created_time,ad_name,form_id,ad_id&access_token=${encodeURIComponent(token)}`;
 
@@ -47,35 +50,63 @@ const fetchMetaLead = (leadgenId) =>
     req.on('error', reject);
   });
 
+// Meta field names that map to the Lead's structured columns — everything else
+// the lead answered is kept as a custom field.
+const STANDARD_META_FIELDS = new Set([
+  'full_name', 'name', 'first_name', 'last_name',
+  'phone_number', 'phone', 'mobile_number', 'contact_number',
+  'email', 'email_address',
+]);
+
+// "what_is_your_budget?" → "What Is Your Budget"
+const humanizeFieldName = (key) =>
+  String(key)
+    .replace(/\?+$/, '')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+
 /**
- * Map Meta field_data array → { name, phone, email }.
- * Meta uses various field name conventions across forms.
+ * Map Meta field_data array → { name, phone, email, customFields }.
+ * Meta uses various field name conventions across forms; every question the
+ * lead answered that isn't one of the standard contact fields is captured into
+ * customFields (multi-select answers are comma-joined).
  */
 const extractFields = (fieldData = []) => {
-  const map = {};
+  const first = {};   // first value per field — for the single-value contact fields
+  const joined = {};  // all values joined — for custom (possibly multi-select) answers
   for (const f of fieldData) {
-    map[f.name] = (f.values ?? [])[0] ?? '';
+    const vals = (f.values ?? []).filter((v) => v != null && v !== '');
+    first[f.name] = vals[0] ?? '';
+    joined[f.name] = vals.join(', ');
   }
 
   const name =
-    map['full_name'] ||
-    map['name'] ||
-    `${map['first_name'] || ''} ${map['last_name'] || ''}`.trim() ||
+    first['full_name'] ||
+    first['name'] ||
+    `${first['first_name'] || ''} ${first['last_name'] || ''}`.trim() ||
     'Unknown';
 
   const phone =
-    map['phone_number'] ||
-    map['phone'] ||
-    map['mobile_number'] ||
-    map['contact_number'] ||
+    first['phone_number'] ||
+    first['phone'] ||
+    first['mobile_number'] ||
+    first['contact_number'] ||
     '';
 
   const email =
-    map['email'] ||
-    map['email_address'] ||
+    first['email'] ||
+    first['email_address'] ||
     '';
 
-  return { name, phone, email };
+  // Everything else the lead answered (budget, config, city, custom questions…)
+  const customFields = {};
+  for (const [key, value] of Object.entries(joined)) {
+    if (STANDARD_META_FIELDS.has(key) || !value) continue;
+    customFields[humanizeFieldName(key)] = value;
+  }
+
+  return { name, phone, email, customFields };
 };
 
 // Round-robin agent assignment now lives in shared utils/resolveProjectAgent.js
@@ -97,30 +128,36 @@ const resolveSystemUser = async () => {
 };
 
 /**
- * Match incoming Meta page/form to a CRM project.
+ * Match incoming Meta page/form to a CRM project AND the matched mapping doc
+ * (so callers can honour the mapping's own agent set).
  * Checks DB mappings first (formId is more specific, then pageId).
  * Falls back to META_PROJECT_MAP env var for backwards compatibility.
+ *
+ * @returns {{ projectId: string|null, mapping: object|null }}
  */
-const resolveProject = async (pageId, formId) => {
+const resolveRouting = async (pageId, formId) => {
   // 1. Check DB — formId first (more specific)
   if (formId) {
     const formMapping = await MetaMapping.findOne({ metaId: formId, type: 'form' }).lean();
-    if (formMapping) return formMapping.project.toString();
+    if (formMapping) return { projectId: formMapping.project?.toString() || null, mapping: formMapping };
   }
   if (pageId) {
     const pageMapping = await MetaMapping.findOne({ metaId: pageId, type: 'page' }).lean();
-    if (pageMapping) return pageMapping.project.toString();
+    if (pageMapping) return { projectId: pageMapping.project?.toString() || null, mapping: pageMapping };
   }
 
-  // 2. Fallback to .env
+  // 2. Fallback to .env (no agent set — project routing only)
   try {
     const raw = process.env.META_PROJECT_MAP;
-    if (!raw) return null;
-    const map = JSON.parse(raw);
-    return map[formId] || map[pageId] || null;
+    if (raw) {
+      const map = JSON.parse(raw);
+      const pid = map[formId] || map[pageId] || null;
+      if (pid) return { projectId: pid, mapping: null };
+    }
   } catch {
-    return null;
+    /* ignore malformed env map */
   }
+  return { projectId: null, mapping: null };
 };
 
 /* ─── Core Lead Processing ────────────────────────────────── */
@@ -136,6 +173,20 @@ const processLeadgenEvent = async (value) => {
     metaAdName: ad_name,
   };
 
+  // 0. Meta's Webhooks "Send to server" sample uses all-4s placeholder ids
+  // (leadgen_id/page_id = "444444444444"). It's not a real lead — skip cleanly
+  // so it doesn't look like a failure. Real test leads come from the Lead Ads
+  // Testing Tool with genuine ids.
+  if (/^4+$/.test(String(leadgen_id || '')) || /^4+$/.test(String(page_id || ''))) {
+    await WebhookLog.create({
+      ...logData,
+      status: 'skipped',
+      error: 'Meta webhook sample ping (placeholder data) — use the Lead Ads Testing Tool for a real lead',
+    });
+    console.log('[META] Skipped Meta webhook sample ping (dummy 4s payload)');
+    return;
+  }
+
   // 1. Idempotency — skip if already processed
   const alreadyExists = await Lead.findOne({ metaLeadId: leadgen_id }).lean();
   if (alreadyExists) {
@@ -149,10 +200,13 @@ const processLeadgenEvent = async (value) => {
     return;
   }
 
-  // 2. Fetch full lead data from Graph API
+  // 1b. Resolve the connected Page (token to fetch the lead + default routing project)
+  const pageCtx = await resolvePageContext(page_id).catch(() => null);
+
+  // 2. Fetch full lead data from Graph API (using the Page's token when connected)
   let metaData;
   try {
-    metaData = await fetchMetaLead(leadgen_id);
+    metaData = await fetchMetaLead(leadgen_id, pageCtx?.token);
   } catch (err) {
     await WebhookLog.create({
       ...logData,
@@ -188,7 +242,11 @@ const processLeadgenEvent = async (value) => {
   // resolveProjectAgent() atomically advances the weighted round-robin cursor. Resolving
   // it here would let a duplicate lead consume a rotation slot and skip the next agent.
   // createdBy still requires a real user, so always resolve a system user for that.
-  const projectId = await resolveProject(page_id, form_id);
+  // Form/page MetaMapping wins; else fall back to the connected Page's default project.
+  const routing = await resolveRouting(page_id, form_id);
+  const projectId =
+    routing.projectId ||
+    (pageCtx?.defaultProject ? String(pageCtx.defaultProject) : null);
 
   const createdBy = await resolveSystemUser().catch((err) => {
     console.error('[META] Cannot resolve system user:', err.message);
@@ -212,6 +270,8 @@ const processLeadgenEvent = async (value) => {
   // 7. Duplicate check by phone + project — same phone on different projects = separate leads
   const existingByPhone = await Lead.findOne({ phone: cleanedPhone, project: projectId || null });
   if (existingByPhone) {
+    // Merge any new form answers into the existing lead's custom fields.
+    const mergedCustomFields = { ...(existingByPhone.customFields || {}), ...fields.customFields };
     await Lead.findByIdAndUpdate(existingByPhone._id, {
       $set: {
         metaLeadId: leadgen_id,
@@ -219,6 +279,7 @@ const processLeadgenEvent = async (value) => {
         metaFormId: form_id,
         email: fields.email || existingByPhone.email,
         source,
+        customFields: mergedCustomFields,
         lastContactedAt: new Date(),
       },
     });
@@ -234,12 +295,31 @@ const processLeadgenEvent = async (value) => {
     return;
   }
 
-  // 8. Genuinely new lead — NOW advance the weighted round-robin cursor and assign.
+  // 8. Genuinely new lead — NOW advance the rotation cursor and assign.
+  // If the matched form/page mapping pins its own agent set, round-robin within
+  // that set (scoped). Otherwise use the project's weighted round-robin.
   // assignedTo may be null (no eligible agent) — that's OK, the lead stays unassigned.
-  const assignedTo = projectId ? await resolveProjectAgent(projectId) : null;
+  const mappingPool = (routing.mapping?.assignedAgents || []).map(String);
+  let assignedTo = null;
+  let usedMappingPool = false;
+  if (mappingPool.length) {
+    assignedTo = await rotateAgentInPool(MetaMapping, routing.mapping);
+    if (assignedTo) usedMappingPool = true;
+  }
+  if (!assignedTo && projectId) {
+    assignedTo = await resolveProjectAgent(projectId);
+  }
+
+  // A single-agent mapping is a deliberate pin — skip the accept/reassign timer.
+  // A multi-agent mapping keeps the timer, scoped to its own set via assignmentPool
+  // so an ignored lead only bounces within that subset (never the whole project).
+  const isFixedPin = usedMappingPool && mappingPool.length === 1;
+  const assignmentPool = usedMappingPool && mappingPool.length > 1 ? mappingPool : undefined;
 
   // Auto-assigned leads require the agent to Accept within 15 min (business hours only).
-  const acceptance = shouldRequireAcceptance(assignedTo) ? initialAcceptanceFields(assignedTo) : {};
+  const acceptance = (!isFixedPin && shouldRequireAcceptance(assignedTo))
+    ? initialAcceptanceFields(assignedTo)
+    : {};
 
   // 9. Create new lead
   try {
@@ -252,9 +332,11 @@ const processLeadgenEvent = async (value) => {
       metaLeadId: leadgen_id,
       metaAdName: ad_name,
       metaFormId: form_id,
+      customFields: Object.keys(fields.customFields).length ? fields.customFields : undefined,
       project: projectId || null,
       assignedTo: assignedTo || null,
       createdBy,
+      assignmentPool,
       ...acceptance,
     });
 
@@ -378,10 +460,28 @@ exports.getLogStats = async (req, res, next) => {
 
 /* ─── Meta → Project Mappings (CRUD) ────────────────────────── */
 
+/**
+ * Validate a mapping's agent set: every id must be an agent assigned to the
+ * project, duplicates removed. Returns { ids } on success or { error }.
+ * Empty/undefined → [] (project round-robin).
+ */
+const validateMappingAgents = async (projectId, agentIds) => {
+  if (!agentIds || !Array.isArray(agentIds) || agentIds.length === 0) return { ids: [] };
+  const unique = [...new Set(agentIds.map(String))];
+  const projectDoc = await Project.findById(projectId).select('assignedAgents').lean();
+  if (!projectDoc) return { error: 'Project not found' };
+  const members = new Set((projectDoc.assignedAgents || []).map(String));
+  if (unique.some((id) => !members.has(id))) {
+    return { error: 'Every selected agent must be assigned to this project first.' };
+  }
+  return { ids: unique };
+};
+
 exports.getMappings = async (req, res, next) => {
   try {
     const mappings = await MetaMapping.find()
       .populate('project', 'name developer')
+      .populate('assignedAgents', 'name email')
       .sort({ createdAt: -1 })
       .lean();
     res.json(mappings);
@@ -392,7 +492,7 @@ exports.getMappings = async (req, res, next) => {
 
 exports.createMapping = async (req, res, next) => {
   try {
-    const { metaId, type, project, label } = req.body;
+    const { metaId, type, project, label, assignedAgents } = req.body;
 
     if (!metaId || !type || !project) {
       return res.status(400).json({ message: 'metaId, type, and project are required' });
@@ -403,10 +503,47 @@ exports.createMapping = async (req, res, next) => {
       return res.status(409).json({ message: `This ${type} ID is already mapped` });
     }
 
-    const mapping = await MetaMapping.create({ metaId: metaId.trim(), type, project, label: label?.trim() });
-    const populated = await mapping.populate('project', 'name developer');
+    const agents = await validateMappingAgents(project, assignedAgents);
+    if (agents.error) return res.status(400).json({ message: agents.error });
+
+    const mapping = await MetaMapping.create({
+      metaId: metaId.trim(),
+      type,
+      project,
+      assignedAgents: agents.ids,
+      label: label?.trim(),
+    });
+    await mapping.populate('project', 'name developer');
+    const populated = await mapping.populate('assignedAgents', 'name email');
     logActivity({ req, action: 'mapping.create', resource: 'mapping', resourceId: mapping._id, details: `Mapped Meta ${type} ${metaId} → project` });
     res.status(201).json(populated);
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.updateMapping = async (req, res, next) => {
+  try {
+    const { project, label, assignedAgents } = req.body;
+    const mapping = await MetaMapping.findById(req.params.id);
+    if (!mapping) return res.status(404).json({ message: 'Mapping not found' });
+
+    if (project !== undefined) mapping.project = project;
+    if (label !== undefined) mapping.label = label?.trim();
+
+    if (assignedAgents !== undefined) {
+      const effectiveProject = project || mapping.project;
+      const agents = await validateMappingAgents(effectiveProject, assignedAgents);
+      if (agents.error) return res.status(400).json({ message: agents.error });
+      mapping.assignedAgents = agents.ids;
+      mapping.nextAgentIndex = 0; // reset rotation when the set changes
+    }
+
+    await mapping.save();
+    await mapping.populate('project', 'name developer');
+    await mapping.populate('assignedAgents', 'name email');
+    logActivity({ req, action: 'mapping.update', resource: 'mapping', resourceId: mapping._id, details: `Updated Meta ${mapping.type} mapping ${mapping.metaId}` });
+    res.json(mapping);
   } catch (err) {
     next(err);
   }
