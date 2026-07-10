@@ -3,6 +3,7 @@ const http = require('http');
 const { parse } = require('csv-parse/sync');
 const SheetConfig = require('../models/SheetConfig');
 const SheetSyncLog = require('../models/SheetSyncLog');
+const Project = require('../models/Project');
 const processSheetLead = require('../utils/processSheetLead');
 const logActivity = require('../utils/logActivity');
 
@@ -45,6 +46,26 @@ const recordSyncLog = ({ config, source, row, rowNumber, result }) => {
 };
 
 /* ─── Helpers ─────────────────────────────────────────────── */
+
+/**
+ * Validate a sheet's agent set: every id must be an agent assigned to the project,
+ * with duplicates removed. Returns { ids } on success or { error } on failure.
+ * An empty/undefined set is valid → resolves to [] (project round-robin).
+ */
+const validateSheetAgents = async (projectId, agentIds) => {
+  if (!agentIds || !Array.isArray(agentIds) || agentIds.length === 0) {
+    return { ids: [] };
+  }
+  const unique = [...new Set(agentIds.map(String))];
+  const project = await Project.findById(projectId).select('assignedAgents').lean();
+  if (!project) return { error: 'Project not found' };
+  const projectAgents = new Set((project.assignedAgents || []).map(String));
+  const outsiders = unique.filter((id) => !projectAgents.has(id));
+  if (outsiders.length) {
+    return { error: 'Every selected agent must be assigned to this project first.' };
+  }
+  return { ids: unique };
+};
 
 /**
  * Extract Google Sheet ID from a full URL or plain ID.
@@ -143,6 +164,7 @@ exports.getConfigs = async (req, res, next) => {
   try {
     const configs = await SheetConfig.find()
       .populate('project', 'name developer')
+      .populate('assignedAgents', 'name email')
       .sort({ createdAt: -1 })
       .lean();
     res.json(configs);
@@ -153,7 +175,7 @@ exports.getConfigs = async (req, res, next) => {
 
 exports.createConfig = async (req, res, next) => {
   try {
-    const { sheetUrl, sheetName, project, columnMap, customFieldMap, label } = req.body;
+    const { sheetUrl, sheetName, project, assignedAgents, columnMap, customFieldMap, label } = req.body;
 
     if (!sheetUrl || !project) {
       return res.status(400).json({ message: 'Sheet URL and project are required' });
@@ -170,6 +192,12 @@ exports.createConfig = async (req, res, next) => {
       return res.status(409).json({ message: 'This sheet tab is already configured' });
     }
 
+    // Validate the sheet's agent set (if any) are all agents assigned to the project.
+    const agentIds = await validateSheetAgents(project, assignedAgents);
+    if (agentIds.error) {
+      return res.status(400).json({ message: agentIds.error });
+    }
+
     // Verify sheet is accessible
     try {
       await fetchSheetCSV(sheetId, gid);
@@ -182,12 +210,14 @@ exports.createConfig = async (req, res, next) => {
       gid,
       sheetName: sheetName || '',
       project,
+      assignedAgents: agentIds.ids,
       columnMap: columnMap || undefined,
       customFieldMap: customFieldMap || undefined,
       label: label?.trim(),
     });
 
-    const populated = await config.populate('project', 'name developer');
+    await config.populate('project', 'name developer');
+    const populated = await config.populate('assignedAgents', 'name email');
     logActivity({ req, action: 'sheet.create', resource: 'sheet', resourceId: config._id, details: `Connected sheet ${config.label || config.sheetId}` });
     res.status(201).json(populated);
   } catch (err) {
@@ -197,7 +227,7 @@ exports.createConfig = async (req, res, next) => {
 
 exports.updateConfig = async (req, res, next) => {
   try {
-    const { sheetName, project, columnMap, customFieldMap, label, isActive } = req.body;
+    const { sheetName, project, assignedAgents, columnMap, customFieldMap, label, isActive } = req.body;
     const update = {};
     if (sheetName !== undefined) update.sheetName = sheetName;
     if (project) update.project = project;
@@ -206,8 +236,23 @@ exports.updateConfig = async (req, res, next) => {
     if (label !== undefined) update.label = label;
     if (isActive !== undefined) update.isActive = isActive;
 
+    // assignedAgents: [] clears the set (revert to project round-robin). Validate
+    // against the effective project (the new one if changing, else the existing one).
+    if (assignedAgents !== undefined) {
+      const current = await SheetConfig.findById(req.params.id).select('project').lean();
+      if (!current) return res.status(404).json({ message: 'Config not found' });
+      const effectiveProject = project || current.project;
+      const validated = await validateSheetAgents(effectiveProject, assignedAgents);
+      if (validated.error) return res.status(400).json({ message: validated.error });
+      update.assignedAgents = validated.ids;
+      // Reset the rotation cursor whenever the agent set changes, so a new set
+      // starts a clean round-robin rather than jumping mid-cycle.
+      update.nextAgentIndex = 0;
+    }
+
     const config = await SheetConfig.findByIdAndUpdate(req.params.id, { $set: update }, { new: true })
-      .populate('project', 'name developer');
+      .populate('project', 'name developer')
+      .populate('assignedAgents', 'name email');
 
     if (!config) return res.status(404).json({ message: 'Config not found' });
 

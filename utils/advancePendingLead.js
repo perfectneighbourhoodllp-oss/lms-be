@@ -1,14 +1,14 @@
 const Lead = require('../models/Lead');
 const notifyAssignment = require('./notifyAssignment');
 const notifyUnassigned = require('./notifyUnassigned');
-const { ACCEPT_WINDOW_MIN, eligibleAgentIds, nextUntriedAgent } = require('./leadAcceptance');
+const { ACCEPT_WINDOW_MIN, eligibleAgentIds, eligibleAgentIdsFromPool, nextUntriedAgent } = require('./leadAcceptance');
 
 /**
  * Move a still-pending lead to the next untried agent in the project's rotation,
  * or escalate when nobody is left. Shared by the 15-min reassignment cron and the
  * explicit "Reject" action so both behave identically.
  *
- * @param {object} lead  lean lead doc with { _id, project, assignedTo, triedAgents }
+ * @param {object} lead  lean lead doc with { _id, project, assignedTo, triedAgents, assignmentPool }
  * @param {object} opts
  *   - now: reference time (default new Date())
  *   - rearmSingleAgent: when true (timeout path), a sole eligible agent who is the
@@ -17,7 +17,11 @@ const { ACCEPT_WINDOW_MIN, eligibleAgentIds, nextUntriedAgent } = require('./lea
  * @returns {{ action: 'reassigned'|'escalated'|'rearmed'|'noop', next?: string }}
  */
 async function advancePendingLead(lead, { now = new Date(), rearmSingleAgent = false } = {}) {
-  const eligible = await eligibleAgentIds(lead.project);
+  // Leads from a multi-agent sheet carry an assignmentPool — reassignment stays
+  // within that subset. Otherwise use the full project rotation.
+  const eligible = lead.assignmentPool?.length
+    ? await eligibleAgentIdsFromPool(lead.assignmentPool)
+    : await eligibleAgentIds(lead.project);
   const next = nextUntriedAgent(eligible, lead.triedAgents, lead.assignedTo);
   const newDeadline = new Date(now.getTime() + ACCEPT_WINDOW_MIN * 60 * 1000);
 

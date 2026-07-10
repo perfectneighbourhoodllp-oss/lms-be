@@ -584,7 +584,7 @@ exports.rejectLead = async (req, res, next) => {
       assignedTo: req.user.id,
       acceptanceStatus: 'pending',
     })
-      .select('name phone project assignedTo triedAgents')
+      .select('name phone project assignedTo triedAgents assignmentPool')
       .lean();
 
     if (!lead) {

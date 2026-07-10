@@ -6,6 +6,14 @@ const sheetConfigSchema = new mongoose.Schema(
     gid: { type: String, default: '0', trim: true },
     sheetName: { type: String, trim: true, default: '' },
     project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
+    // Optional per-sheet agent set. Leads from this sheet are round-robined only
+    // among these agents:
+    //   - [] (empty) → fall back to the project's weighted round-robin (all agents)
+    //   - [one]      → every lead pinned to that single agent
+    //   - [two+]     → round-robin within this subset only
+    assignedAgents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    // Round-robin cursor for this sheet's own agent set (independent of the project's)
+    nextAgentIndex: { type: Number, default: 0 },
     columnMap: {
       name: { type: String, default: 'name' },
       phone: { type: String, default: 'phone' },

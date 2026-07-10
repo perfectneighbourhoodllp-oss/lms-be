@@ -5,6 +5,7 @@ const notifyAssignment = require('./notifyAssignment');
 const notifyUnassigned = require('./notifyUnassigned');
 const cleanPhone = require('./cleanPhone');
 const resolveProjectAgent = require('./resolveProjectAgent');
+const resolveSheetAgent = require('./resolveSheetAgent');
 const { shouldRequireAcceptance, initialAcceptanceFields } = require('./leadAcceptance');
 
 /**
@@ -73,11 +74,32 @@ const processSheetLead = async (row, sheetConfig) => {
     const validSources = ['Instagram', 'Ads', 'Referral', 'Walk-in', 'Website', 'Database', 'Other'];
     const resolvedSource = validSources.includes(source) ? source : 'Ads';
 
-    // Resolve agent — leave null if no eligible agent on the project.
-    // createdBy still needs a real user (required field), so fall back to system user.
-    const assignedTo = await resolveProjectAgent(projectId);
+    // Resolve agent. A sheet can carry its own agent set (assignedAgents):
+    //   - [one]  → always that agent (fixed pin, no accept timer)
+    //   - [two+] → round-robin within that subset (accept timer scoped to it)
+    //   - []     → project-wide weighted round-robin (existing behaviour)
+    // If the sheet's set has nobody currently eligible, fall back to the project
+    // rotation so the lead is never stranded. createdBy still needs a real user
+    // (required field), so fall back to system user.
+    const poolIds = (sheetConfig.assignedAgents || []).map(String);
+    let assignedTo = null;
+    let useSheetPool = false; // true only when we actually assigned from the sheet set
+
+    if (poolIds.length) {
+      assignedTo = await resolveSheetAgent(sheetConfig);
+      if (assignedTo) useSheetPool = true;
+    }
+    if (!assignedTo) {
+      assignedTo = await resolveProjectAgent(projectId);
+    }
     const systemUserId = await resolveSystemUser();
     const createdBy = assignedTo || systemUserId;
+
+    // A single-agent sheet is a deliberate pin — skip the accept/reassign timer.
+    // A multi-agent sheet keeps the timer, but scoped to its own set via
+    // assignmentPool, so an ignored lead only bounces within that subset.
+    const isFixedPin = useSheetPool && poolIds.length === 1;
+    const assignmentPool = useSheetPool && poolIds.length > 1 ? poolIds : undefined;
 
     // Duplicate check by phone + project — each (phone, project) is its own lead
     const existing = await Lead.findOne({ phone, project: projectId });
@@ -97,7 +119,11 @@ const processSheetLead = async (row, sheetConfig) => {
     }
 
     // Round-robin-assigned sheet leads need the agent to Accept (15-min reassign timer).
-    const acceptance = shouldRequireAcceptance(assignedTo) ? initialAcceptanceFields(assignedTo) : {};
+    // Fixed single-agent pins are deliberate — skip the accept/reassign flow so the
+    // lead never bounces off to another agent.
+    const acceptance = (!isFixedPin && shouldRequireAcceptance(assignedTo))
+      ? initialAcceptanceFields(assignedTo)
+      : {};
 
     // Create new lead
     const lead = await Lead.create({
@@ -111,6 +137,7 @@ const processSheetLead = async (row, sheetConfig) => {
       assignedTo: assignedTo || null,
       createdBy,
       customFields: Object.keys(customFields).length ? customFields : undefined,
+      assignmentPool,
       ...acceptance,
     });
 

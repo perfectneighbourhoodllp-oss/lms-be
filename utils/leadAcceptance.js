@@ -1,4 +1,5 @@
 const Project = require('../models/Project');
+const User = require('../models/User');
 
 // Agents must Accept an auto-assigned lead within this many minutes, else it reassigns.
 // Override with LEAD_ACCEPT_WINDOW_MIN for testing (e.g. 2). Defaults to 15.
@@ -71,6 +72,23 @@ const eligibleAgentIds = async (projectId) => {
     .map((a) => String(a._id));
 };
 
+// Eligible (active + available) agent ids from an explicit list — used to scope
+// reassignment to a sheet's own agent set. Preserves the given order (that order
+// is the sheet's rotation order).
+const eligibleAgentIdsFromPool = async (poolIds) => {
+  if (!poolIds?.length) return [];
+  const agents = await User.find({
+    _id: { $in: poolIds },
+    isActive: { $ne: false },
+    isAvailable: { $ne: false },
+  })
+    .select('_id')
+    .lean();
+  const eligibleSet = new Set(agents.map((a) => String(a._id)));
+  // Return in the pool's declared order, filtered to those still eligible.
+  return poolIds.map(String).filter((id) => eligibleSet.has(id));
+};
+
 // Next eligible agent in rotation order who hasn't been tried yet.
 // Returns null when every eligible agent has already had a turn (→ escalate).
 const nextUntriedAgent = (eligibleOrdered, triedIds, currentAssignee) => {
@@ -92,5 +110,6 @@ module.exports = {
   initialAcceptanceFields,
   shouldRequireAcceptance,
   eligibleAgentIds,
+  eligibleAgentIdsFromPool,
   nextUntriedAgent,
 };

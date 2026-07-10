@@ -87,6 +87,10 @@ const leadSchema = new mongoose.Schema(
     reassignmentCount: { type: Number, default: 0 },
     // Agents who have already been given this lead during the acceptance cycle.
     triedAgents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    // When a lead was ingested from a multi-agent sheet, this holds that sheet's
+    // agent set. Auto-reassignment is then scoped to these agents only (never the
+    // whole project). Empty/unset → reassignment uses the full project rotation.
+    assignmentPool: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   },
   { timestamps: true }
 );

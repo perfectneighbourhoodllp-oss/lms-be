@@ -24,7 +24,7 @@ const processDueLeads = async () => {
     acceptanceStatus: 'pending',
     acceptDeadline: { $lt: now },
   })
-    .select('name phone source followUpDate project assignedTo triedAgents reassignmentCount')
+    .select('name phone source followUpDate project assignedTo triedAgents reassignmentCount assignmentPool')
     .lean();
 
   for (const lead of dueLeads) {
