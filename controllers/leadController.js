@@ -12,6 +12,8 @@ const { shouldRequireAcceptance, initialAcceptanceFields } = require('../utils/l
 const advancePendingLead = require('../utils/advancePendingLead');
 const Project = require('../models/Project');
 const { getManagerProjectFilter } = require('../utils/managerScope');
+const sendCapiEvent = require('../utils/sendCapiEvent');
+const { QUALIFICATION_EVENTS } = require('../utils/sendCapiEvent');
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
@@ -300,19 +302,24 @@ exports.updateLead = async (req, res, next) => {
   try {
     let allowed = req.body;
 
-    // Capture previous assignee + status to detect reassignment / status changes
-    const existing = await Lead.findById(req.params.id).select('assignedTo status');
+    // Capture previous assignee + status + qualification to detect changes
+    const existing = await Lead.findById(req.params.id).select('assignedTo status qualification');
     if (!existing) return res.status(404).json({ message: 'Lead not found' });
 
     if (req.user.role === 'sales') {
       if (String(existing.assignedTo) !== String(req.user.id)) {
         return res.status(403).json({ message: 'Not authorised' });
       }
-      // Sales can only update a restricted set of fields (tags included — they
-      // qualify their own leads).
-      const { status, notes, followUpDate, lastContactedAt, tags } = req.body;
-      allowed = { status, notes, followUpDate, lastContactedAt, tags };
+      // Sales can only update a restricted set of fields (tags + qualification
+      // included — they qualify their own leads).
+      const { status, notes, followUpDate, lastContactedAt, tags, qualification } = req.body;
+      allowed = { status, notes, followUpDate, lastContactedAt, tags, qualification };
     }
+
+    // Stamp qualifiedAt whenever the qualification actually changes.
+    const qualificationChanged =
+      allowed.qualification !== undefined && allowed.qualification !== existing.qualification;
+    if (qualificationChanged) allowed.qualifiedAt = new Date();
 
     // A manual reassignment is deliberate and does NOT require acceptance. Clear the
     // pending-acceptance flow so the reassignment cron won't override the admin's choice.
@@ -350,6 +357,19 @@ exports.updateLead = async (req, res, next) => {
     // Notify if assignedTo changed to a different agent
     if (allowed.assignedTo && String(allowed.assignedTo) !== String(existing.assignedTo)) {
       notifyAssignment(allowed.assignedTo, lead, req.user.id);
+    }
+
+    // CAPI: when the lead's qualification changes to one that maps to an event
+    // (Qualified / Not Qualified), send it to Meta. Fire-and-forget; no-op until
+    // the dataset id + token are configured.
+    if (qualificationChanged) {
+      const eventName = QUALIFICATION_EVENTS[allowed.qualification];
+      if (eventName) {
+        sendCapiEvent(lead, eventName, {
+          qualification: allowed.qualification,
+          triggeredBy: req.user.id,
+        }).catch(() => {});
+      }
     }
 
     // Build a friendly details string of what changed

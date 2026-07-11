@@ -9,14 +9,14 @@ const GRAPH_HOST = 'graph.facebook.com';
  * @param {string} path   e.g. "/me/accounts" (no host, no version prefix)
  * @param {object} params query/body params (access_token included here)
  */
-const graphRequest = (method, path, params = {}) =>
+const graphRequest = (method, path, params = {}, version = GRAPH_VERSION) =>
   new Promise((resolve, reject) => {
     const qs = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v !== undefined && v !== null)
     ).toString();
 
     const isGet = method === 'GET';
-    const fullPath = `/${GRAPH_VERSION}${path}${isGet && qs ? `?${qs}` : ''}`;
+    const fullPath = `/${version}${path}${isGet && qs ? `?${qs}` : ''}`;
     const body = isGet ? null : qs;
 
     const options = {

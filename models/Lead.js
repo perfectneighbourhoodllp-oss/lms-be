@@ -2,6 +2,9 @@ const mongoose = require('mongoose');
 
 const SOURCES = ['Instagram', 'Ads', 'Referral', 'Walk-in', 'Website', 'Database', 'Other'];
 const STATUSES = ['New', 'Called', 'RNR', 'Follow Up', 'Interested', 'Webinar', 'Site Visit', 'Cross Selling', 'Closed', 'Not Interested', 'Dead'];
+// Lead outcome/quality — an independent signal fed back to Meta via the
+// Conversions API (CAPI). Separate from the sales `status` pipeline on purpose.
+const QUALIFICATIONS = ['Qualified', 'Not Qualified', 'Converted'];
 // Qualitative labels a lead can carry (multiple at once). Curated preset so the
 // values stay consistent and filterable — sales agents pick from this list.
 const TAGS = [
@@ -28,6 +31,10 @@ const leadSchema = new mongoose.Schema(
     email: { type: String, trim: true, lowercase: true },
     source: { type: String, enum: SOURCES, default: 'Other' },
     status: { type: String, enum: STATUSES, default: 'New' },
+    // Lead outcome for Meta CAPI. Unset until an agent qualifies the lead.
+    qualification: { type: String, enum: QUALIFICATIONS, default: null },
+    // When the qualification last changed — also the CAPI event_time source.
+    qualifiedAt: { type: Date },
     // Qualitative labels (e.g. 'Low Budget', 'Wants Different Config'). Multiple allowed.
     tags: { type: [{ type: String, enum: TAGS }], default: [] },
     notes: { type: String, trim: true },
@@ -119,3 +126,4 @@ module.exports = Lead;
 module.exports.SOURCES = SOURCES;
 module.exports.STATUSES = STATUSES;
 module.exports.TAGS = TAGS;
+module.exports.QUALIFICATIONS = QUALIFICATIONS;

@@ -9,6 +9,7 @@ const logActivity = require('../utils/logActivity');
 const cleanPhone = require('../utils/cleanPhone');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
 const rotateAgentInPool = require('../utils/rotateAgentInPool');
+const sendCapiEvent = require('../utils/sendCapiEvent');
 const { shouldRequireAcceptance, initialAcceptanceFields } = require('../utils/leadAcceptance');
 const Project = require('../models/Project');
 const { resolvePageContext } = require('./metaOAuthController');
@@ -352,6 +353,12 @@ const processLeadgenEvent = async (value) => {
       const project = projectId ? await Project.findById(projectId).select('name').lean() : null;
       notifyUnassigned({ ...lead.toObject(), project });
     }
+
+    // CAPI: fire the initial "Lead" funnel event (Meta recommends every stage,
+    // starting from the raw lead). Fire-and-forget — never blocks lead creation.
+    // No-op until the dataset id + token are configured.
+    sendCapiEvent(lead, 'Lead').catch(() => {});
+
     console.log(`[META] ✅ New lead created: ${lead._id} (${fields.name} / ${cleanedPhone}) — ${assignedTo ? 'assigned' : 'UNASSIGNED'}`);
   } catch (err) {
     await WebhookLog.create({
