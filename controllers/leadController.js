@@ -11,7 +11,7 @@ const User = require('../models/User');
 const { shouldRequireAcceptance, initialAcceptanceFields } = require('../utils/leadAcceptance');
 const advancePendingLead = require('../utils/advancePendingLead');
 const Project = require('../models/Project');
-const { getManagerProjectFilter } = require('../utils/managerScope');
+const { getManagerLeadFilter } = require('../utils/managerScope');
 const sendCapiEvent = require('../utils/sendCapiEvent');
 const { QUALIFICATION_EVENTS } = require('../utils/sendCapiEvent');
 
@@ -22,16 +22,16 @@ const { QUALIFICATION_EVENTS } = require('../utils/sendCapiEvent');
  *
  *   • sales   → only their own assigned leads
  *   • admin   → no filter (sees all)
- *   • manager → if they have project assignments, scoped to those;
- *               otherwise no filter (sees all).
+ *   • manager → leads in their managed projects OR assigned to their team
+ *               (people who report to them); no scope of either → sees all.
  *
- * Async because manager scoping requires a DB lookup for assigned projects.
+ * Async because manager scoping requires DB lookups for projects + team.
  */
 const buildRoleFilter = async (user) => {
   if (user.role === 'sales') return { assignedTo: user.id };
   if (user.role === 'admin') return {};
-  // Manager: apply project-scope filter if any projects are assigned.
-  return await getManagerProjectFilter(user);
+  // Manager: project-scope OR team-scope (union).
+  return await getManagerLeadFilter(user);
 };
 
 /**

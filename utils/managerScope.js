@@ -1,4 +1,5 @@
 const Project = require('../models/Project');
+const User = require('../models/User');
 
 /**
  * For a manager user, return the list of project IDs they are responsible for.
@@ -38,7 +39,45 @@ async function getManagerProjectFilter(user) {
   return { project: { $in: ids } };
 }
 
+/**
+ * The user IDs of everyone who reports to this manager (their direct team).
+ * @returns {Promise<mongoose.Types.ObjectId[]>} (empty array if none)
+ */
+async function getManagedAgentIds(managerId) {
+  if (!managerId) return [];
+  const reports = await User.find({ reportsTo: managerId }).select('_id').lean();
+  return reports.map((u) => u._id);
+}
+
+/**
+ * Unified lead-visibility filter for a manager: they see a lead if it's in one
+ * of their managed projects OR assigned to someone on their team.
+ *
+ *   • no projects AND no team  → {}  (unscoped — sees all, current default)
+ *   • only projects            → { project: { $in } }
+ *   • only team                → { assignedTo: { $in } }
+ *   • both                     → { $or: [ {project…}, {assignedTo…} ] }
+ */
+async function getManagerLeadFilter(user) {
+  if (!user || user.role !== 'manager') return {};
+  const uid = user.id || user._id;
+  const [projectIds, agentIds] = await Promise.all([
+    getManagedProjectIds(uid),
+    getManagedAgentIds(uid),
+  ]);
+
+  const clauses = [];
+  if (projectIds && projectIds.length) clauses.push({ project: { $in: projectIds } });
+  if (agentIds && agentIds.length) clauses.push({ assignedTo: { $in: agentIds } });
+
+  if (!clauses.length) return {};          // unscoped
+  if (clauses.length === 1) return clauses[0];
+  return { $or: clauses };
+}
+
 module.exports = {
   getManagedProjectIds,
+  getManagedAgentIds,
   getManagerProjectFilter,
+  getManagerLeadFilter,
 };

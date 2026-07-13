@@ -8,6 +8,9 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true, minlength: 6 },
     role: { type: String, enum: ['admin', 'manager', 'sales'], default: 'sales' },
     phone: { type: String, trim: true },
+    // The manager this user reports to. Managers see the leads of everyone who
+    // reports to them (in addition to any project-scoped access). null = no manager.
+    reportsTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     isActive: { type: Boolean, default: true },
     // Self-managed: when false, user is excluded from new lead round-robin
     // assignment but can still log in and work existing leads.

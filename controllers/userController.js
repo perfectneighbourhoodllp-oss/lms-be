@@ -10,7 +10,8 @@ const { getManagedProjectIds } = require('../utils/managerScope');
 exports.getUsers = async (req, res, next) => {
   try {
     const users = await User.find()
-      .select('name email role phone isActive isAvailable createdAt')
+      .select('name email role phone isActive isAvailable createdAt reportsTo')
+      .populate('reportsTo', 'name')
       .sort({ role: 1, name: 1 })
       .lean();
 
@@ -107,7 +108,7 @@ exports.getAgentPerformance = async (req, res, next) => {
 /** POST /api/users — admin/manager creates a new agent */
 exports.createUser = async (req, res, next) => {
   try {
-    const { name, email, password, role, phone } = req.body;
+    const { name, email, password, role, phone, reportsTo } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({ message: 'name, email and password are required' });
@@ -121,7 +122,11 @@ exports.createUser = async (req, res, next) => {
     const existing = await User.findOne({ email });
     if (existing) return res.status(400).json({ message: 'Email already registered' });
 
-    const user = await User.create({ name, email, password, role: role || 'sales', phone });
+    // A manager creating a salesperson → that person reports to them by default.
+    // An admin can set any manager via reportsTo.
+    const manager = req.user.role === 'manager' ? req.user.id : (reportsTo || null);
+
+    const user = await User.create({ name, email, password, role: role || 'sales', phone, reportsTo: manager });
 
     logActivity({
       req,
@@ -149,7 +154,7 @@ exports.createUser = async (req, res, next) => {
 /** PUT /api/users/:id — admin updates name, phone, role, isActive, isAvailable */
 exports.updateUser = async (req, res, next) => {
   try {
-    const { name, phone, role, isActive, isAvailable } = req.body;
+    const { name, phone, role, isActive, isAvailable, reportsTo } = req.body;
 
     // Cannot pause an admin (preserves at least one active admin for fallback ops)
     if (isAvailable === false) {
@@ -183,10 +188,12 @@ exports.updateUser = async (req, res, next) => {
       return res.json(user);
     }
 
-    // Admin path — full update including role
+    // Admin path — full update including role + reportsTo (manager assignment)
+    const adminSet = { name, phone, role, isActive, isAvailable };
+    if (reportsTo !== undefined) adminSet.reportsTo = reportsTo || null;
     const user = await User.findByIdAndUpdate(
       req.params.id,
-      { $set: { name, phone, role, isActive, isAvailable } },
+      { $set: adminSet },
       { new: true, runValidators: true }
     ).select('-password');
 
@@ -334,18 +341,23 @@ exports.getAgentProfileStats = async (req, res, next) => {
       return res.status(403).json({ message: 'You can only view your own profile' });
     }
     if (!isSelf && req.user.role === 'manager') {
-      const managedProjectIds = await getManagedProjectIds(req.user.id);
-      if (managedProjectIds) {
-        // Manager is scoped — agent must be assigned to one of these projects
-        const agentInScope = await Project.findOne({
-          _id: { $in: managedProjectIds },
-          assignedAgents: targetId,
-        }).select('_id').lean();
-        if (!agentInScope) {
-          return res.status(403).json({ message: 'This agent is not in your managed projects' });
+      // Allowed if the agent reports directly to this manager…
+      const target = await User.findById(targetId).select('reportsTo').lean();
+      const isDirectReport = target && String(target.reportsTo) === String(req.user.id);
+      if (!isDirectReport) {
+        // …else fall back to the project-scope rule.
+        const managedProjectIds = await getManagedProjectIds(req.user.id);
+        if (managedProjectIds) {
+          const agentInScope = await Project.findOne({
+            _id: { $in: managedProjectIds },
+            assignedAgents: targetId,
+          }).select('_id').lean();
+          if (!agentInScope) {
+            return res.status(403).json({ message: 'This agent is not on your team or in your managed projects' });
+          }
         }
+        // managedProjectIds null AND not a direct report → unscoped manager → can view anyone
       }
-      // If managedProjectIds is null → manager is unscoped → can view anyone
     }
 
     const user = await User.findById(targetId)
