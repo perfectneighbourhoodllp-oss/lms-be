@@ -11,6 +11,7 @@ const {
   getRelatedLeads,
   bulkUpload,
   bulkDelete,
+  bulkSetLeadType,
   getTodayFollowups,
   getOverdueLeads,
   getStats,
@@ -42,6 +43,7 @@ router.get('/export', authorize('admin'), exportLeads);
 router.route('/').get(getLeads).post(createLead);
 router.post('/bulk', authorize('admin', 'manager'), upload.single('file'), bulkUpload);
 router.post('/bulk-delete', authorize('admin'), bulkDelete);
+router.post('/bulk-type', authorize('admin'), bulkSetLeadType);
 router.route('/:id')
   .get(getLead)
   .put(updateLead)

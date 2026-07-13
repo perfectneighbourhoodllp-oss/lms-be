@@ -418,6 +418,45 @@ exports.bulkDelete = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/leads/bulk-type — move selected leads between the 'live' and
+ * 'database' buckets (admin). Moving to 'database' also clears any pending
+ * accept flow, since database (cold) leads don't use the 15-min accept timer.
+ */
+exports.bulkSetLeadType = async (req, res, next) => {
+  try {
+    const { ids, leadType } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'ids must be a non-empty array of lead IDs' });
+    }
+    if (leadType !== 'live' && leadType !== 'database') {
+      return res.status(400).json({ message: "leadType must be 'live' or 'database'" });
+    }
+
+    const set = { leadType };
+    if (leadType === 'database') {
+      // Cold database leads skip the accept/reassign flow — clear it so the cron
+      // never acts on them.
+      set.acceptanceStatus = 'not_required';
+      set.acceptDeadline = null;
+    }
+
+    const result = await Lead.updateMany({ _id: { $in: ids } }, { $set: set });
+    const n = result.modifiedCount ?? result.nModified ?? 0;
+
+    logActivity({
+      req,
+      action: 'lead.bulkSetLeadType',
+      resource: 'lead',
+      details: `Moved ${n} lead${n !== 1 ? 's' : ''} to ${leadType === 'database' ? 'Database' : 'Live'}`,
+    });
+
+    res.json({ modifiedCount: n, leadType });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.deleteLead = async (req, res, next) => {
   try {
     const lead = await Lead.findByIdAndDelete(req.params.id);
