@@ -284,6 +284,10 @@ exports.createLead = async (req, res, next) => {
       notifyUnassigned(populated);
     }
 
+    // WhatsApp instant first-touch — gated inside startConversation to
+    // ad-source (Ads/Instagram) live leads only. Fire-and-forget.
+    require('./waAgentController').startConversation(populated).catch(() => {});
+
     logActivity({
       req,
       action: 'lead.create',

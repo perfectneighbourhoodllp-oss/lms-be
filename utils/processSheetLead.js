@@ -149,6 +149,11 @@ const processSheetLead = async (row, sheetConfig) => {
       notifyUnassigned({ ...lead.toObject(), project });
     }
 
+    // WhatsApp instant first-touch (live leads only; guarded by WA_AGENT_ENABLED).
+    if (lead.phone) {
+      require('../controllers/waAgentController').startConversation(lead).catch(() => {});
+    }
+
     return { status: 'success', lead };
   } catch (err) {
     return { status: 'failed', error: err.message };

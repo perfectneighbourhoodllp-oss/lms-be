@@ -94,6 +94,42 @@ const leadSchema = new mongoose.Schema(
     reassignmentCount: { type: Number, default: 0 },
     // Agents who have already been given this lead during the acceptance cycle.
     triedAgents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+
+    // ─── WhatsApp qualification agent (instant outbound on live-lead creation) ───
+    // Namespaced so it never clashes with the CRM's status/qualification/customFields.
+    // The bot COLLECTS answers here and hands off to a human — it never sets
+    // `qualification` itself (a human confirms that in the CRM).
+    wa: {
+      enabled: { type: Boolean, default: false }, // is the bot driving this lead?
+      stage: {
+        type: String,
+        enum: ['new', 'engaging', 'qualifying', 'handoff', 'dormant'],
+        default: 'new',
+      },
+      // Qualifying answers captured from the WhatsApp conversation
+      slots: {
+        configuration: { type: String, default: null }, // 2/3/4 BHK / Plot
+        budgetLakh: { type: Number, default: null },
+        locationPref: { type: String, default: null },
+        timeline: { type: String, default: null }, // 0-3m / 3-6m / 6m+
+        intent: { type: String, default: null }, // buy / invest / exploring
+      },
+      pendingQuestion: { type: String, default: null }, // which button question awaits a reply
+      handoff: {
+        trigger: { type: String, default: null },
+        summary: { type: String, default: null },
+        notifiedAt: { type: Date, default: null },
+      },
+      messages: [
+        {
+          role: { type: String, enum: ['user', 'assistant'] },
+          text: String,
+          at: { type: Date, default: Date.now },
+        },
+      ],
+      lastInboundAt: { type: Date, default: null },
+      lastOutboundAt: { type: Date, default: null },
+    },
     // When a lead was ingested from a multi-agent sheet, this holds that sheet's
     // agent set. Auto-reassignment is then scoped to these agents only (never the
     // whole project). Empty/unset → reassignment uses the full project rotation.
