@@ -302,8 +302,8 @@ exports.updateLead = async (req, res, next) => {
   try {
     let allowed = req.body;
 
-    // Capture previous assignee + status + qualification to detect changes
-    const existing = await Lead.findById(req.params.id).select('assignedTo status qualification');
+    // Capture previous assignee + status + qualification + project to detect changes
+    const existing = await Lead.findById(req.params.id).select('assignedTo status qualification project');
     if (!existing) return res.status(404).json({ message: 'Lead not found' });
 
     if (req.user.role === 'sales') {
@@ -320,6 +320,16 @@ exports.updateLead = async (req, res, next) => {
     const qualificationChanged =
       allowed.qualification !== undefined && allowed.qualification !== existing.qualification;
     if (qualificationChanged) allowed.qualifiedAt = new Date();
+
+    // Admin/manager sets a project on a lead that has no agent → auto-route it to
+    // that project's round-robin agent so the lead becomes actionable. Skips leads
+    // that already have an agent, or when the caller explicitly picked an assignee.
+    const projectChanged =
+      allowed.project && String(allowed.project) !== String(existing.project || '');
+    if (projectChanged && !allowed.assignedTo && !existing.assignedTo) {
+      const agent = await resolveProjectAgent(allowed.project);
+      if (agent) allowed.assignedTo = agent;
+    }
 
     // A manual reassignment is deliberate and does NOT require acceptance. Clear the
     // pending-acceptance flow so the reassignment cron won't override the admin's choice.
@@ -377,6 +387,7 @@ exports.updateLead = async (req, res, next) => {
     if (allowed.status) changes.push(`status → ${allowed.status}`);
     if (allowed.followUpDate !== undefined) changes.push('followUp');
     if (allowed.assignedTo && String(allowed.assignedTo) !== String(existing.assignedTo)) changes.push('reassigned');
+    if (projectChanged) changes.push('project');
     if (allowed.notes !== undefined) changes.push('notes');
 
     logActivity({
