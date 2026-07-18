@@ -12,62 +12,85 @@ const {
   sendList,
 } = require('../services/whatsapp');
 
-/* ─── Qualification button flow (deterministic core) ──────────── */
+/* ─── Qualification flow (deterministic core) ─────────────────────
+ * Each question has: { slot, type: 'buttons'|'list', body, buttonText?,
+ *   items: [{ id, title, value }] }.  Configuration and budget are built
+ *   PER-PROJECT (from project.waConfig, falling back to the defaults below);
+ *   timeline and intent are global.
+ * ──────────────────────────────────────────────────────────────── */
 
-const QUESTIONS = [
-  {
-    slot: 'configuration',
-    type: 'buttons',
-    body: 'Great! To share the best options — which configuration are you looking for?',
-    options: [
-      { id: 'cfg_2bhk', title: '2 BHK' },
-      { id: 'cfg_3bhk', title: '3 BHK' },
-      { id: 'cfg_4bhk', title: '4 BHK / Plot' },
-    ],
-  },
-  {
-    slot: 'budgetLakh',
-    type: 'list',
-    body: 'What budget range are you considering?',
-    buttonText: 'Budget',
-    rows: [
-      { id: 'bud_50', title: 'Under ₹50L' },
-      { id: 'bud_50_1cr', title: '₹50L – ₹1 Cr' },
-      { id: 'bud_1_2cr', title: '₹1 – 2 Cr' },
-      { id: 'bud_2cr', title: '₹2 Cr and above' },
-    ],
-  },
-  {
-    slot: 'timeline',
-    type: 'buttons',
-    body: 'When are you planning to buy?',
-    options: [
-      { id: 'tl_0_3', title: '0-3 months' },
-      { id: 'tl_3_6', title: '3-6 months' },
-      { id: 'tl_6p', title: '6+ months' },
-    ],
-  },
-  {
-    slot: 'intent',
-    type: 'buttons',
-    body: 'And is this primarily to live in, or an investment?',
-    options: [
-      { id: 'int_buy', title: 'To live in' },
-      { id: 'int_invest', title: 'Investment' },
-      { id: 'int_explore', title: 'Just exploring' },
-    ],
-  },
+// Fallbacks used when a project hasn't configured its own options.
+const DEFAULT_CONFIGURATIONS = ['2 BHK', '3 BHK', '4 BHK / Plot'];
+const DEFAULT_BUDGET_BANDS = [
+  { label: 'Under ₹50L', valueLakh: 50 },
+  { label: '₹50L – ₹1 Cr', valueLakh: 100 },
+  { label: '₹1 – 2 Cr', valueLakh: 200 },
+  { label: '₹2 Cr and above', valueLakh: 250 },
 ];
 
-// Button/list reply id → [slot, value]
-const ANSWER_MAP = {
-  cfg_2bhk: ['configuration', '2 BHK'], cfg_3bhk: ['configuration', '3 BHK'], cfg_4bhk: ['configuration', '4 BHK / Plot'],
-  bud_50: ['budgetLakh', 50], bud_50_1cr: ['budgetLakh', 100], bud_1_2cr: ['budgetLakh', 200], bud_2cr: ['budgetLakh', 250],
-  tl_0_3: ['timeline', '0-3 months'], tl_3_6: ['timeline', '3-6 months'], tl_6p: ['timeline', '6+ months'],
-  int_buy: ['intent', 'buy'], int_invest: ['intent', 'invest'], int_explore: ['intent', 'exploring'],
+// Global (project-agnostic) questions.
+const TIMELINE_QUESTION = {
+  slot: 'timeline',
+  type: 'buttons',
+  body: 'When are you planning to buy?',
+  items: [
+    { id: 'tl_0_3', title: '0-3 months', value: '0-3 months' },
+    { id: 'tl_3_6', title: '3-6 months', value: '3-6 months' },
+    { id: 'tl_6p', title: '6+ months', value: '6+ months' },
+  ],
+};
+const INTENT_QUESTION = {
+  slot: 'intent',
+  type: 'buttons',
+  body: 'And is this primarily to live in, or an investment?',
+  items: [
+    { id: 'int_buy', title: 'To live in', value: 'buy' },
+    { id: 'int_invest', title: 'Investment', value: 'invest' },
+    { id: 'int_explore', title: 'Just exploring', value: 'exploring' },
+  ],
 };
 
-const nextQuestion = (slots) => QUESTIONS.find((q) => slots?.[q.slot] == null);
+// Build the ordered question list for a given project. WhatsApp allows max 3
+// reply buttons, so a configuration with >3 options renders as a list instead.
+function buildQuestions(project) {
+  const wa = project?.waConfig || {};
+  const configs = wa.configurations?.length ? wa.configurations : DEFAULT_CONFIGURATIONS;
+  const bands = wa.budgetBands?.length ? wa.budgetBands : DEFAULT_BUDGET_BANDS;
+
+  const configItems = configs.map((c, i) => ({ id: `cfg_${i}`, title: c, value: c }));
+  const budgetItems = bands.map((b, i) => ({ id: `bud_${i}`, title: b.label, value: b.valueLakh }));
+
+  return [
+    {
+      slot: 'configuration',
+      type: configItems.length > 3 ? 'list' : 'buttons',
+      body: 'Great! To share the best options — which configuration are you looking for?',
+      buttonText: 'Configuration',
+      items: configItems,
+    },
+    {
+      slot: 'budgetLakh',
+      type: 'list',
+      body: 'What budget range are you considering?',
+      buttonText: 'Budget',
+      items: budgetItems,
+    },
+    TIMELINE_QUESTION,
+    INTENT_QUESTION,
+  ];
+}
+
+const nextQuestion = (slots, questions) => questions.find((q) => slots?.[q.slot] == null);
+const questionBySlot = (slot, questions) => questions.find((q) => q.slot === slot);
+
+// Decode a button/list reply against the question it answered → [slot, value].
+const decodeAnswer = (q, interactiveId, title) => {
+  if (!q) return null;
+  const hit =
+    q.items.find((o) => o.id === interactiveId) ||
+    (title ? q.items.find((o) => o.title === title) : null);
+  return hit ? [q.slot, hit.value] : null;
+};
 
 // Opt-out intent — the "Stop" template button or a typed stop/unsubscribe.
 const isStopIntent = (text) =>
@@ -75,14 +98,13 @@ const isStopIntent = (text) =>
 
 const sendQuestion = (to, q) =>
   q.type === 'list'
-    ? sendList(to, { body: q.body, buttonText: q.buttonText, rows: q.rows })
-    : sendButtons(to, { body: q.body, buttons: q.options });
+    ? sendList(to, { body: q.body, buttonText: q.buttonText || 'Select', rows: q.items })
+    : sendButtons(to, { body: q.body, buttons: q.items });
 
 // Human-readable transcript text for what the bot actually sent, so the
 // WhatsApp Inbox reads like the real chat (body + the choices the lead saw).
 const questionTranscript = (q) => {
-  const choices = (q.type === 'list' ? q.rows : q.options) || [];
-  const titles = choices.map((o) => o.title).join(' · ');
+  const titles = (q.items || []).map((o) => o.title).join(' · ');
   return titles ? `${q.body}\n[ ${titles} ]` : q.body;
 };
 
@@ -257,10 +279,18 @@ async function processMessage(m) {
   // Already handed off — just record the message; a human owns the conversation now.
   if (lead.wa.stage === 'handoff') { await lead.save(); return; }
 
+  // Build this project's question set (configuration + budget are per-project).
+  const project = lead.project
+    ? await Project.findById(lead.project).select('name waConfig').lean()
+    : null;
+  const questions = buildQuestions(project);
+
   const slots = lead.wa.slots || {};
 
-  // 1) Structured button/list answer → record it deterministically.
-  const ans = interactiveId && ANSWER_MAP[interactiveId];
+  // 1) Structured button/list answer → decode it against the pending question.
+  const ans = interactiveId
+    ? decodeAnswer(questionBySlot(lead.wa.pendingQuestion, questions), interactiveId, text)
+    : null;
   if (ans) {
     slots[ans[0]] = ans[1];
     lead.wa.slots = slots;
@@ -289,7 +319,7 @@ async function processMessage(m) {
   mirrorToCustomFields(lead);
 
   // 3) Advance the deterministic flow — ask the next unanswered question, or hand off.
-  const q = nextQuestion(lead.wa.slots || {});
+  const q = nextQuestion(lead.wa.slots || {}, questions);
   if (q) {
     lead.wa.stage = 'qualifying';
     lead.wa.pendingQuestion = q.slot;

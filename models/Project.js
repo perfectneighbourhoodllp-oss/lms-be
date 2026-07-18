@@ -24,6 +24,18 @@ const projectSchema = new mongoose.Schema(
     // Default unset/empty = weight 1 for everyone (equal round-robin).
     agentWeights: { type: mongoose.Schema.Types.Mixed, default: {} },
     notes: { type: String, trim: true },
+    // Per-project WhatsApp qualification options. When empty, the bot falls
+    // back to the global defaults in waAgentController. Timeline & intent stay
+    // global (they don't vary by project).
+    waConfig: {
+      // Configuration choices the lead can pick from, e.g. ['2 BHK','3 BHK'] or ['Plot'].
+      configurations: { type: [String], default: [] },
+      // Budget bands shown to the lead. label = display text, valueLakh = numeric (₹ lakh).
+      budgetBands: {
+        type: [{ label: { type: String, trim: true }, valueLakh: { type: Number } }],
+        default: [],
+      },
+    },
   },
   { timestamps: true }
 );

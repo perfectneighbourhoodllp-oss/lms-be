@@ -1,6 +1,22 @@
 const Project = require('../models/Project');
 const logActivity = require('../utils/logActivity');
 
+// Normalize the WhatsApp qualification config from the request body — drop
+// blank configurations and malformed budget bands. Returns undefined when the
+// caller didn't send waConfig (so we don't clobber existing values on update).
+function cleanWaConfig(raw) {
+  if (raw === undefined) return undefined;
+  const configurations = Array.isArray(raw?.configurations)
+    ? raw.configurations.map((c) => String(c).trim()).filter(Boolean)
+    : [];
+  const budgetBands = Array.isArray(raw?.budgetBands)
+    ? raw.budgetBands
+        .map((b) => ({ label: String(b?.label ?? '').trim(), valueLakh: Number(b?.valueLakh) }))
+        .filter((b) => b.label && Number.isFinite(b.valueLakh))
+    : [];
+  return { configurations, budgetBands };
+}
+
 exports.getProjects = async (req, res, next) => {
   try {
     // Scope for managers — if they have project assignments, only return those.
@@ -48,10 +64,13 @@ exports.getProject = async (req, res, next) => {
 
 exports.createProject = async (req, res, next) => {
   try {
-    const { name, developer, location, type, notes } = req.body;
+    const { name, developer, location, type, notes, waConfig } = req.body;
     if (!name) return res.status(400).json({ message: 'Project name is required' });
 
-    const project = await Project.create({ name, developer, location, type, notes });
+    const project = await Project.create({
+      name, developer, location, type, notes,
+      waConfig: cleanWaConfig(waConfig) || { configurations: [], budgetBands: [] },
+    });
     logActivity({ req, action: 'project.create', resource: 'project', resourceId: project._id, details: `Created project "${project.name}"` });
     res.status(201).json(project);
   } catch (err) {
@@ -61,10 +80,13 @@ exports.createProject = async (req, res, next) => {
 
 exports.updateProject = async (req, res, next) => {
   try {
-    const { name, developer, location, type, notes, isActive } = req.body;
+    const { name, developer, location, type, notes, isActive, waConfig } = req.body;
+    const set = { name, developer, location, type, notes, isActive };
+    const cleanedWa = cleanWaConfig(waConfig);
+    if (cleanedWa) set.waConfig = cleanedWa; // only touch it when the client sent it
     const project = await Project.findByIdAndUpdate(
       req.params.id,
-      { $set: { name, developer, location, type, notes, isActive } },
+      { $set: set },
       { new: true, runValidators: true }
     ).populate('assignedAgents', 'name email role');
 
