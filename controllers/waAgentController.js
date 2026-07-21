@@ -136,8 +136,8 @@ const mirrorToCustomFields = (lead) => {
 };
 
 /* ─── Notify a human rep on handoff ───────────────────────────── */
-async function notifyRep(lead, summary) {
-  const title = `WhatsApp lead ready: ${lead.name}`;
+async function notifyRep(lead, summary, title) {
+  title = title || `WhatsApp lead ready: ${lead.name}`;
   const message = `${lead.phone} — ${summary || 'qualifying answers captured'}`;
   if (lead.assignedTo) {
     createNotification({ userId: lead.assignedTo, type: 'lead.waHandoff', title, message, relatedLead: lead._id });
@@ -235,7 +235,42 @@ async function startConversation(lead) {
 
 const processedIds = new Set(); // simple in-memory dedupe of WA message ids
 
-async function processMessage(m) {
+// An inbound message from a number we don't recognise (not tied to any ad lead).
+// Auto-create a live lead so the inquiry surfaces in the WhatsApp Inbox and an
+// admin is notified. Deliberately left unassigned — a human triages it.
+async function handleUnknownInbound(from, text, profileName) {
+  const phone = `+${waPhone(from)}`;
+  const now = new Date();
+  const summary = 'New inbound WhatsApp message (no ad source) — unassigned, please respond.';
+  try {
+    // createdBy is required — resolve the first active admin as the system user.
+    const admin = await User.findOne({ role: 'admin', isActive: true }).select('_id').lean();
+    if (!admin) { console.error('[WA] handleUnknownInbound: no active admin for createdBy'); return; }
+
+    const lead = await Lead.create({
+      name: (profileName && profileName.trim()) || `WhatsApp ${phone}`,
+      phone,
+      source: 'WhatsApp',
+      leadType: 'live',
+      createdBy: admin._id,
+      // Intentionally no project and no assignedTo — a human triages it.
+      wa: {
+        enabled: true,
+        stage: 'handoff',                 // surfaces in the WhatsApp Inbox
+        lastInboundAt: now,
+        messages: [{ role: 'user', text: text || '[message]', at: now }],
+        handoff: { trigger: 'inbound', summary, notifiedAt: now },
+      },
+    });
+    await notifyRep(lead, summary, `New WhatsApp inquiry: ${lead.name}`);
+    console.log(`[WA] Created inbound lead ${lead._id} for ${phone}`);
+  } catch (err) {
+    // e.g. a race that created the same lead a moment ago — safe to skip.
+    console.error(`[WA] handleUnknownInbound failed for ${from}:`, err.message);
+  }
+}
+
+async function processMessage(m, profileName) {
   if (!m || !m.from) return;
   if (m.id && processedIds.has(m.id)) return;
   if (m.id) { processedIds.add(m.id); if (processedIds.size > 5000) processedIds.clear(); }
@@ -244,6 +279,7 @@ async function processMessage(m) {
   let text = null;
   let interactiveId = null;
   let isStart = false; // tapped the first-touch template's quick-reply button
+  let isMedia = false; // photo/voice/doc/location — captured, not run through the qualifier
   if (m.type === 'text') text = m.text?.body || '';
   else if (m.type === 'interactive') {
     const r = m.interactive?.button_reply || m.interactive?.list_reply;
@@ -253,10 +289,14 @@ async function processMessage(m) {
     // Quick-reply button on the approved first-touch TEMPLATE.
     text = m.button?.text || 'Start';
     isStart = true;
-  } else return; // ignore other types (image/audio/etc.) for now
+  } else { text = `[${m.type}]`; isMedia = true; } // image/audio/document/location → capture, don't drop
 
   const lead = await findLeadByWaPhone(from);
-  if (!lead) { console.log(`[WA] Inbound from unknown number ${from} — ignored`); return; }
+  if (!lead) {
+    // Unknown number — not tied to any ad lead. Auto-create so the inquiry isn't lost.
+    await handleUnknownInbound(from, text, profileName);
+    return;
+  }
   if (!lead.wa) lead.wa = {};
 
   const now = new Date();
@@ -264,6 +304,10 @@ async function processMessage(m) {
   lead.wa.lastInboundAt = now;
   lead.wa.messages = lead.wa.messages || [];
   lead.wa.messages.push({ role: 'user', text: text || `[${interactiveId || 'reply'}]`, at: now });
+
+  // Media (photo/voice/doc) — record it for a human to review; don't run the
+  // button qualifier or the AI on a non-text message.
+  if (isMedia) { await lead.save(); return; }
 
   // Opt-out ("Stop" template button or typed stop) — halt the bot, don't message further.
   if (isStopIntent(text)) {
@@ -354,9 +398,20 @@ exports.handleInbound = (req, res) => {
     const entries = req.body?.entry || [];
     for (const entry of entries) {
       for (const change of entry.changes || []) {
+        // Status callbacks (delivered/read/sent) hit this same endpoint but carry
+        // no message — log & skip so it's clear why they don't reach the inbox.
+        if (change.value?.statuses && !change.value?.messages) {
+          console.log(`[WA] status callback: ${change.value.statuses.map((s) => s.status).join(',')} — ignored`);
+          continue;
+        }
+        // Map wa_id → WhatsApp profile name so unknown senders get a real name.
+        const names = {};
+        for (const c of change.value?.contacts || []) {
+          if (c?.wa_id) names[c.wa_id] = c.profile?.name;
+        }
         const messages = change.value?.messages || [];
         for (const m of messages) {
-          processMessage(m).catch((err) => console.error('[WA] processMessage error:', err.message));
+          processMessage(m, names[m.from]).catch((err) => console.error('[WA] processMessage error:', err.message));
         }
       }
     }
