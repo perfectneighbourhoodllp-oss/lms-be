@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const { protect, authorize } = require('../middleware/auth');
+const uploadProjectImage = require('../middleware/uploadProjectImage');
 const {
   getProjects,
   getProject,
@@ -8,6 +9,7 @@ const {
   deleteProject,
   assignAgents,
   assignManagers,
+  uploadImage,
 } = require('../controllers/projectController');
 
 router.use(protect);
@@ -17,6 +19,7 @@ router.get('/', getProjects);
 router.get('/:id', getProject);
 
 // Only admin/manager can create, edit, delete, assign agents
+router.post('/upload-image', authorize('admin', 'manager'), uploadProjectImage.single('file'), uploadImage);
 router.post('/', authorize('admin', 'manager'), createProject);
 router.put('/:id', authorize('admin', 'manager'), updateProject);
 router.delete('/:id', authorize('admin'), deleteProject);

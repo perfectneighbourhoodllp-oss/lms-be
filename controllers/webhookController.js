@@ -10,6 +10,7 @@ const cleanPhone = require('../utils/cleanPhone');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
 const rotateAgentInPool = require('../utils/rotateAgentInPool');
 const sendCapiEvent = require('../utils/sendCapiEvent');
+const { startConversation } = require('./waAgentController');
 const { shouldRequireAcceptance, initialAcceptanceFields } = require('../utils/leadAcceptance');
 const Project = require('../models/Project');
 const { resolvePageContext } = require('./metaOAuthController');
@@ -358,6 +359,12 @@ const processLeadgenEvent = async (value) => {
     // starting from the raw lead). Fire-and-forget — never blocks lead creation.
     // No-op until the dataset id + token are configured.
     sendCapiEvent(lead, 'Lead').catch(() => {});
+
+    // WhatsApp: instant first-touch to start qualifying (live leads only).
+    // Fire-and-forget; internally guarded by WA_AGENT_ENABLED + config.
+    if (lead.leadType !== 'database' && lead.phone) {
+      startConversation(lead).catch(() => {});
+    }
 
     console.log(`[META] ✅ New lead created: ${lead._id} (${fields.name} / ${cleanedPhone}) — ${assignedTo ? 'assigned' : 'UNASSIGNED'}`);
   } catch (err) {

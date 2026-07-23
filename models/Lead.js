@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const SOURCES = ['Instagram', 'Ads', 'Referral', 'Walk-in', 'Website', 'Database', 'Other'];
+const SOURCES = ['Instagram', 'Ads', 'Referral', 'Walk-in', 'Website', 'WhatsApp', 'Database', 'Other'];
 const STATUSES = ['New', 'Called', 'RNR', 'Follow Up', 'Interested', 'Webinar', 'Site Visit', 'Cross Selling', 'Closed', 'Not Interested', 'Dead'];
 // Lead outcome/quality — an independent signal fed back to Meta via the
 // Conversions API (CAPI). Separate from the sales `status` pipeline on purpose.
@@ -94,6 +94,48 @@ const leadSchema = new mongoose.Schema(
     reassignmentCount: { type: Number, default: 0 },
     // Agents who have already been given this lead during the acceptance cycle.
     triedAgents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+
+    // ─── WhatsApp qualification agent (instant outbound on live-lead creation) ───
+    // Namespaced so it never clashes with the CRM's status/qualification/customFields.
+    // The bot COLLECTS answers here and hands off to a human — it never sets
+    // `qualification` itself (a human confirms that in the CRM).
+    wa: {
+      enabled: { type: Boolean, default: false }, // is the bot driving this lead?
+      stage: {
+        type: String,
+        enum: ['new', 'engaging', 'qualifying', 'handoff', 'dormant'],
+        default: 'new',
+      },
+      // Qualifying answers captured from the WhatsApp conversation
+      slots: {
+        configuration: { type: String, default: null }, // 2/3/4 BHK / Plot
+        budgetLakh: { type: Number, default: null },
+        locationPref: { type: String, default: null },
+        timeline: { type: String, default: null }, // 0-3m / 3-6m / 6m+
+        intent: { type: String, default: null }, // buy / invest / exploring
+      },
+      pendingQuestion: { type: String, default: null }, // which button question awaits a reply
+      teaserSent: { type: Boolean, default: false }, // hero image sent at opt-in — skip it in the handoff gallery
+      handoff: {
+        trigger: { type: String, default: null },
+        summary: { type: String, default: null },
+        notifiedAt: { type: Date, default: null },
+      },
+      messages: [
+        {
+          role: { type: String, enum: ['user', 'assistant'] },
+          text: String,
+          // Attached media (project photos the bot sends, or files an agent sends
+          // from the inbox). Incoming lead media isn't downloaded yet — stays a label.
+          mediaUrl: { type: String, default: null },
+          mediaType: { type: String, default: null }, // 'image' | 'document'
+          fileName: { type: String, default: null },  // for documents
+          at: { type: Date, default: Date.now },
+        },
+      ],
+      lastInboundAt: { type: Date, default: null },
+      lastOutboundAt: { type: Date, default: null },
+    },
     // When a lead was ingested from a multi-agent sheet, this holds that sheet's
     // agent set. Auto-reassignment is then scoped to these agents only (never the
     // whole project). Empty/unset → reassignment uses the full project rotation.

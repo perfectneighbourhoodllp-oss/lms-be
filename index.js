@@ -61,6 +61,7 @@ app.use('/api/projects', require('./routes/projects'));
 app.use('/api/webhook', require('./routes/webhook'));
 app.use('/api/meta', require('./routes/meta'));
 app.use('/api/capi', require('./routes/capi'));
+app.use('/api/whatsapp', require('./routes/whatsapp'));
 app.use('/api/sheets', require('./routes/sheets'));
 app.use('/api/activity-logs', require('./routes/activityLogs'));
 app.use('/api/notifications', require('./routes/notifications'));
