@@ -64,11 +64,12 @@ exports.getProject = async (req, res, next) => {
 
 exports.createProject = async (req, res, next) => {
   try {
-    const { name, developer, location, type, notes, waConfig } = req.body;
+    const { name, developer, location, type, notes, link, images, waConfig } = req.body;
     if (!name) return res.status(400).json({ message: 'Project name is required' });
 
     const project = await Project.create({
-      name, developer, location, type, notes,
+      name, developer, location, type, notes, link,
+      images: Array.isArray(images) ? images.filter(Boolean) : [],
       waConfig: cleanWaConfig(waConfig) || { configurations: [], budgetBands: [] },
     });
     logActivity({ req, action: 'project.create', resource: 'project', resourceId: project._id, details: `Created project "${project.name}"` });
@@ -80,8 +81,9 @@ exports.createProject = async (req, res, next) => {
 
 exports.updateProject = async (req, res, next) => {
   try {
-    const { name, developer, location, type, notes, isActive, waConfig } = req.body;
-    const set = { name, developer, location, type, notes, isActive };
+    const { name, developer, location, type, notes, link, images, isActive, waConfig } = req.body;
+    const set = { name, developer, location, type, notes, link, isActive };
+    if (Array.isArray(images)) set.images = images.filter(Boolean); // only touch when sent
     const cleanedWa = cleanWaConfig(waConfig);
     if (cleanedWa) set.waConfig = cleanedWa; // only touch it when the client sent it
     const project = await Project.findByIdAndUpdate(
@@ -213,6 +215,20 @@ exports.assignManagers = async (req, res, next) => {
       details: `Updated manager list for "${project.name}" (${managerIds.length} manager${managerIds.length === 1 ? '' : 's'})`,
     });
     res.json(project);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/projects/upload-image
+ * Multipart upload — multer-storage-cloudinary streams the file to Cloudinary
+ * and attaches the result to req.file. Returns the secure URL to store on the project.
+ */
+exports.uploadImage = async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    res.json({ url: req.file.path, publicId: req.file.filename });
   } catch (err) {
     next(err);
   }

@@ -10,6 +10,8 @@ const {
   sendText,
   sendButtons,
   sendList,
+  sendImage,
+  sendDocument,
 } = require('../services/whatsapp');
 
 /* ─── Qualification flow (deterministic core) ─────────────────────
@@ -149,11 +151,36 @@ async function notifyRep(lead, summary, title) {
   );
 }
 
-async function doHandoff(lead, trigger, summary) {
+// Re-alert the human owner when a lead replies AFTER handoff, so post-handoff
+// messages don't sit unseen. Debounced via handoff.notifiedAt: a burst of
+// replies within the window sends one notification (and bumps the lead to the
+// top of the WhatsApp Inbox, which sorts by notifiedAt).
+const RENOTIFY_MS = 10 * 60 * 1000;
+async function maybeRenotifyHandoff(lead, text) {
+  const last = lead.wa.handoff?.notifiedAt ? new Date(lead.wa.handoff.notifiedAt).getTime() : 0;
+  if (Date.now() - last <= RENOTIFY_MS) return; // debounce bursts
+  lead.wa.handoff = lead.wa.handoff || {};
+  lead.wa.handoff.notifiedAt = new Date();
+  const preview = String(text || '').slice(0, 80);
+  await notifyRep(lead, preview ? `Replied: "${preview}"` : 'Replied on WhatsApp', `WhatsApp reply from ${lead.name}`);
+}
+
+const MAX_HANDOFF_IMAGES = 5;
+
+async function doHandoff(lead, trigger, summary, link, images) {
   lead.wa.stage = 'handoff';
   lead.wa.handoff = { trigger: trigger || 'qualified', summary: summary || summarize(lead), notifiedAt: new Date() };
-  await sendText(lead.phone, 'Thank you! A property advisor from Perfect Neighbourhood will reach out to you shortly with the details.').catch(() => {});
-  lead.wa.messages.push({ role: 'assistant', text: '[handoff — advisor will follow up]', at: new Date() });
+  const base = 'Thank you! A property advisor from Perfect Neighbourhood will reach out to you shortly with the details.';
+  const body = link ? `${base}\n\nIn the meantime, here are the project details: ${link}` : base;
+  await sendText(lead.phone, body).catch(() => {});
+  lead.wa.messages.push({ role: 'assistant', text: body, at: new Date() });
+  // Share the project photos — media is allowed since we're inside the 24h window.
+  // Skip the hero image if it already went out as the opt-in teaser (no repeat).
+  const gallery = (lead.wa.teaserSent ? (images || []).slice(1) : (images || [])).slice(0, MAX_HANDOFF_IMAGES);
+  for (const url of gallery) {
+    await sendImage(lead.phone, { link: url }).catch(() => {});
+    lead.wa.messages.push({ role: 'assistant', text: '', mediaUrl: url, mediaType: 'image', at: new Date() });
+  }
   lead.wa.lastOutboundAt = new Date();
   await notifyRep(lead, lead.wa.handoff.summary);
 }
@@ -187,7 +214,7 @@ async function startConversation(lead) {
   if (process.env.WA_AGENT_ENABLED !== 'true' || !isConfigured()) return;
   if (!lead?.phone) return;
   if (lead.leadType === 'database') return;                    // cold bulk data — no bot
-  if (!['Ads', 'Instagram'].includes(lead.source)) return;      // ad-source leads only
+  if (lead.source !== 'Ads') return;                            // Ads-form leads only (Instagram excluded for now)
   if (lead.wa?.stage === 'dormant') return;                     // opted out — respect it
 
   // Don't message the same person twice when they have multiple project-leads.
@@ -307,7 +334,11 @@ async function processMessage(m, profileName) {
 
   // Media (photo/voice/doc) — record it for a human to review; don't run the
   // button qualifier or the AI on a non-text message.
-  if (isMedia) { await lead.save(); return; }
+  if (isMedia) {
+    if (lead.wa.stage === 'handoff') await maybeRenotifyHandoff(lead, text);
+    await lead.save();
+    return;
+  }
 
   // Opt-out ("Stop" template button or typed stop) — halt the bot, don't message further.
   if (isStopIntent(text)) {
@@ -320,12 +351,17 @@ async function processMessage(m, profileName) {
     return;
   }
 
-  // Already handed off — just record the message; a human owns the conversation now.
-  if (lead.wa.stage === 'handoff') { await lead.save(); return; }
+  // Already handed off — a human owns the conversation now. Record the message
+  // and re-alert the owner (debounced) so post-handoff replies don't sit unseen.
+  if (lead.wa.stage === 'handoff') {
+    await maybeRenotifyHandoff(lead, text);
+    await lead.save();
+    return;
+  }
 
   // Build this project's question set (configuration + budget are per-project).
   const project = lead.project
-    ? await Project.findById(lead.project).select('name waConfig').lean()
+    ? await Project.findById(lead.project).select('name waConfig link images').lean()
     : null;
   const questions = buildQuestions(project);
 
@@ -339,7 +375,15 @@ async function processMessage(m, profileName) {
     slots[ans[0]] = ans[1];
     lead.wa.slots = slots;
   } else if (isStart) {
-    // First-touch template button — just open the flow; the next question sends below.
+    // First-touch opt-in — send one teaser photo as a visual hook. The full set
+    // (and the link) still go out at handoff. The next question sends below.
+    const teaser = project?.images?.[0];
+    if (teaser) {
+      await sendImage(lead.phone, { link: teaser }).catch(() => {});
+      lead.wa.messages.push({ role: 'assistant', text: '', mediaUrl: teaser, mediaType: 'image', at: new Date() });
+      lead.wa.teaserSent = true; // don't repeat this one in the handoff gallery
+      lead.wa.lastOutboundAt = new Date();
+    }
   } else if (text) {
     // 2) Free text → light AI layer: extract slots, reply, maybe flag handoff.
     const agent = await runAgent({ history: lead.wa.messages.slice(0, -1), lastMessage: text });
@@ -353,7 +397,7 @@ async function processMessage(m, profileName) {
       }
       if (agent.handoff) {
         mirrorToCustomFields(lead);
-        await doHandoff(lead, agent.handoff.trigger, agent.handoff.summary);
+        await doHandoff(lead, agent.handoff.trigger, agent.handoff.summary, project?.link, project?.images);
         await lead.save();
         return;
       }
@@ -371,7 +415,7 @@ async function processMessage(m, profileName) {
     lead.wa.messages.push({ role: 'assistant', text: questionTranscript(q), at: new Date() });
     lead.wa.lastOutboundAt = new Date();
   } else {
-    await doHandoff(lead, 'qualified', summarize(lead));
+    await doHandoff(lead, 'qualified', summarize(lead), project?.link, project?.images);
   }
 
   await lead.save();
@@ -398,10 +442,18 @@ exports.handleInbound = (req, res) => {
     const entries = req.body?.entry || [];
     for (const entry of entries) {
       for (const change of entry.changes || []) {
-        // Status callbacks (delivered/read/sent) hit this same endpoint but carry
-        // no message — log & skip so it's clear why they don't reach the inbox.
+        // Status callbacks (delivered/read/sent/failed) hit this same endpoint but
+        // carry no message. Log failures with their error details so a failed
+        // send (e.g. WhatsApp couldn't fetch the media URL) isn't a silent mystery.
         if (change.value?.statuses && !change.value?.messages) {
-          console.log(`[WA] status callback: ${change.value.statuses.map((s) => s.status).join(',')} — ignored`);
+          for (const s of change.value.statuses) {
+            if (s.status === 'failed') {
+              const e = s.errors?.[0] || {};
+              console.error(`[WA] message FAILED (${s.id}): ${e.code || '?'} ${e.title || ''} — ${e.error_data?.details || e.message || ''}`);
+            } else {
+              console.log(`[WA] status: ${s.status}`);
+            }
+          }
           continue;
         }
         // Map wa_id → WhatsApp profile name so unknown senders get a real name.
@@ -463,17 +515,140 @@ exports.repReply = async (req, res, next) => {
   }
 };
 
-// GET /api/whatsapp/handoffs — leads awaiting a human (Inbox feed)
-exports.getHandoffs = async (req, res, next) => {
+// POST /api/whatsapp/leads/:id/send-media — agent sends an image/file from the
+// inbox. The file is already on Cloudinary (uploadWaMedia middleware); we send it
+// by link and record it on the transcript. Within the 24h window only.
+exports.sendMedia = async (req, res, next) => {
   try {
-    const leads = await Lead.find({ 'wa.stage': 'handoff' })
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    const url = req.file.path;
+    const isImage = String(req.file.mimetype || '').startsWith('image/');
+    const caption = (req.body?.caption || '').trim();
+
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+    if (!lead.phone) return res.status(400).json({ message: 'Lead has no phone' });
+    // Sales agents may only send on leads assigned to them.
+    if (req.user.role === 'sales' && String(lead.assignedTo) !== String(req.user.id)) {
+      return res.status(403).json({ message: 'You can only message your own leads' });
+    }
+    // 24h window guard — media only within 24h of the lead's last inbound message.
+    const last = lead.wa?.lastInboundAt ? new Date(lead.wa.lastInboundAt).getTime() : 0;
+    if (Date.now() - last > 24 * 60 * 60 * 1000) {
+      return res.status(409).json({ message: 'Outside the 24-hour window — the lead must message first.' });
+    }
+
+    const fileName = req.file.originalname || 'file';
+    if (isImage) await sendImage(lead.phone, { link: url, caption });
+    else await sendDocument(lead.phone, { link: url, filename: fileName, caption });
+
+    lead.wa = lead.wa || {};
+    lead.wa.messages = lead.wa.messages || [];
+    lead.wa.messages.push({
+      role: 'assistant',
+      text: caption,
+      mediaUrl: url,
+      mediaType: isImage ? 'image' : 'document',
+      fileName: isImage ? null : fileName,
+      at: new Date(),
+    });
+    lead.wa.lastOutboundAt = new Date();
+    await lead.save();
+    res.json({ message: 'Sent', mediaUrl: url });
+  } catch (err) {
+    res.status(502).json({ message: `WhatsApp media send failed: ${err.message}` });
+  }
+};
+
+// POST /api/whatsapp/leads/:id/takeover — the agent takes over an in-progress
+// conversation. Marking it 'handoff' halts the bot's auto-qualifier (processMessage
+// returns early for handoff leads), so the human drives without the bot talking over.
+exports.takeOver = async (req, res, next) => {
+  try {
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+    if (req.user.role === 'sales' && String(lead.assignedTo) !== String(req.user.id)) {
+      return res.status(403).json({ message: 'You can only take over your own leads' });
+    }
+    lead.wa = lead.wa || {};
+    lead.wa.enabled = true;
+    lead.wa.stage = 'handoff';
+    lead.wa.handoff = {
+      trigger: 'agent-takeover',
+      summary: `Agent took over — ${summarize(lead)}`,
+      notifiedAt: new Date(),
+    };
+    await lead.save();
+    res.json({ message: 'You have taken over — the bot has stopped.', stage: lead.wa.stage });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Scope the inbox by role: sales → own leads, manager → their team/projects,
+// admin → everything. Mirrors how the Leads page scopes.
+async function inboxScope(user) {
+  if (user.role === 'admin') return {};
+  if (user.role === 'sales') return { assignedTo: user.id };
+  const { getManagerLeadFilter } = require('../utils/managerScope');
+  return await getManagerLeadFilter(user); // manager
+}
+
+// Order stages so the actionable ones float to the top of the list.
+const STAGE_ORDER = { handoff: 0, qualifying: 1, engaging: 2, new: 3, dormant: 4 };
+const lastActivity = (wa) =>
+  Math.max(
+    wa?.lastInboundAt ? new Date(wa.lastInboundAt).getTime() : 0,
+    wa?.lastOutboundAt ? new Date(wa.lastOutboundAt).getTime() : 0
+  );
+
+// GET /api/whatsapp/inbox — the caller's WhatsApp leads + engagement metrics.
+// Returns { stats, leads }, scoped to the caller's role.
+exports.getInbox = async (req, res, next) => {
+  try {
+    const scope = await inboxScope(req.user);
+    const match = { ...scope, 'wa.enabled': true };
+
+    // Engagement metrics (counts by stage + opt-in rate).
+    const [agg] = await Lead.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: null,
+          contacted: { $sum: 1 },
+          replied: { $sum: { $cond: [{ $ifNull: ['$wa.lastInboundAt', false] }, 1, 0] } },
+          engaging: { $sum: { $cond: [{ $eq: ['$wa.stage', 'engaging'] }, 1, 0] } },
+          qualifying: { $sum: { $cond: [{ $eq: ['$wa.stage', 'qualifying'] }, 1, 0] } },
+          handoff: { $sum: { $cond: [{ $eq: ['$wa.stage', 'handoff'] }, 1, 0] } },
+          dormant: { $sum: { $cond: [{ $eq: ['$wa.stage', 'dormant'] }, 1, 0] } },
+        },
+      },
+    ]);
+    const a = agg || {};
+    const stats = {
+      awaitingYou: a.handoff || 0,
+      qualifying: a.qualifying || 0,
+      engaging: a.engaging || 0,
+      dormant: a.dormant || 0,
+      contacted: a.contacted || 0,
+      replied: a.replied || 0,
+      optInRate: a.contacted ? Math.round((a.replied / a.contacted) * 100) : 0,
+    };
+
+    const leads = await Lead.find(match)
       .select('name phone status qualification wa project assignedTo customFields')
       .populate('project', 'name')
       .populate('assignedTo', 'name')
-      .sort({ 'wa.handoff.notifiedAt': -1 })
       .limit(200)
       .lean();
-    res.json(leads);
+
+    // Sort actionable-first (handoff → qualifying → engaging → dormant), then by recency.
+    leads.sort((x, y) => {
+      const s = (STAGE_ORDER[x.wa?.stage] ?? 9) - (STAGE_ORDER[y.wa?.stage] ?? 9);
+      return s !== 0 ? s : lastActivity(y.wa) - lastActivity(x.wa);
+    });
+
+    res.json({ stats, leads });
   } catch (err) {
     next(err);
   }

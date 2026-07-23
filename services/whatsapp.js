@@ -109,6 +109,30 @@ function sendButtons(to, { body, buttons }) {
   });
 }
 
+/** Image message by public URL. Only valid inside the 24h customer-service window. */
+function sendImage(to, { link, caption } = {}) {
+  return postMessage({
+    messaging_product: 'whatsapp',
+    to: waPhone(to),
+    type: 'image',
+    image: { link, ...(caption ? { caption: String(caption).slice(0, 1024) } : {}) },
+  });
+}
+
+/** Document (PDF/file) message by public URL. Inside the 24h window only. */
+function sendDocument(to, { link, filename, caption } = {}) {
+  return postMessage({
+    messaging_product: 'whatsapp',
+    to: waPhone(to),
+    type: 'document',
+    document: {
+      link,
+      ...(filename ? { filename: String(filename).slice(0, 240) } : {}),
+      ...(caption ? { caption: String(caption).slice(0, 1024) } : {}),
+    },
+  });
+}
+
 /** Interactive single-select list. rows: [{ id, title, description? }]. */
 function sendList(to, { body, buttonText = 'Choose', rows }) {
   return postMessage({
@@ -132,4 +156,4 @@ function sendList(to, { body, buttonText = 'Choose', rows }) {
   });
 }
 
-module.exports = { GRAPH_VERSION, waPhone, isConfigured, sendTemplate, sendText, sendButtons, sendList };
+module.exports = { GRAPH_VERSION, waPhone, isConfigured, sendTemplate, sendText, sendButtons, sendList, sendImage, sendDocument };

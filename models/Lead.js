@@ -115,6 +115,7 @@ const leadSchema = new mongoose.Schema(
         intent: { type: String, default: null }, // buy / invest / exploring
       },
       pendingQuestion: { type: String, default: null }, // which button question awaits a reply
+      teaserSent: { type: Boolean, default: false }, // hero image sent at opt-in — skip it in the handoff gallery
       handoff: {
         trigger: { type: String, default: null },
         summary: { type: String, default: null },
@@ -124,6 +125,11 @@ const leadSchema = new mongoose.Schema(
         {
           role: { type: String, enum: ['user', 'assistant'] },
           text: String,
+          // Attached media (project photos the bot sends, or files an agent sends
+          // from the inbox). Incoming lead media isn't downloaded yet — stays a label.
+          mediaUrl: { type: String, default: null },
+          mediaType: { type: String, default: null }, // 'image' | 'document'
+          fileName: { type: String, default: null },  // for documents
           at: { type: Date, default: Date.now },
         },
       ],
