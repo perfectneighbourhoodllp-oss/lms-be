@@ -114,8 +114,8 @@ const questionTranscript = (q) => {
 // The first-touch template's rendered body (the copy lives in Meta, not here —
 // this mirrors the approved template so the transcript shows real text).
 const firstTouchTranscript = (name, project) =>
-  `Hi ${name || 'there'}, thanks for your interest in ${project} with Perfect Neighbourhood! 🙏\n\n` +
-  'I can quickly share the latest pricing, availability and floor plans. Shall I go ahead?\n' +
+  `Hi ${name || 'there'}, thank you for your enquiry about ${project}. ` +
+  'May we share the details you requested?\n' +
   '[ Yes, share details · Stop ]';
 
 // Carry-forward merge — never overwrite a known slot with a later null/undefined.
