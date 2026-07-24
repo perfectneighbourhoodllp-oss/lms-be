@@ -24,10 +24,11 @@ const {
 // Fallbacks used when a project hasn't configured its own options.
 const DEFAULT_CONFIGURATIONS = ['2 BHK', '3 BHK', '4 BHK / Plot'];
 const DEFAULT_BUDGET_BANDS = [
-  { label: 'Under ₹50L', valueLakh: 50 },
-  { label: '₹50L – ₹1 Cr', valueLakh: 100 },
+  { label: 'Below ₹1 Cr', valueLakh: 100 },
   { label: '₹1 – 2 Cr', valueLakh: 200 },
-  { label: '₹2 Cr and above', valueLakh: 250 },
+  { label: '₹2 – 3 Cr', valueLakh: 300 },
+  { label: '₹3 – 4 Cr', valueLakh: 400 },
+  { label: '₹4 Cr and above', valueLakh: 450 },
 ];
 
 // Global (project-agnostic) questions.
