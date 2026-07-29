@@ -320,6 +320,9 @@ exports.updateLead = async (req, res, next) => {
       allowed = { status, notes, followUpDate, lastContactedAt, tags, qualification };
     }
 
+    // Only admins may rename a lead. Strip `name` for everyone else (managers included).
+    if (req.user.role !== 'admin' && allowed.name !== undefined) delete allowed.name;
+
     // Stamp qualifiedAt whenever the qualification actually changes.
     const qualificationChanged =
       allowed.qualification !== undefined && allowed.qualification !== existing.qualification;
