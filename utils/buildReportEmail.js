@@ -32,6 +32,7 @@ module.exports = function buildReportEmail({ from, to, agents, totals }, periodL
         ${td(a.leadsCalled)}
         ${td(a.leadsWhatsapped)}
         ${td(a.followUpsDone)}
+        ${td(a.siteVisitsDone)}
         ${td(fmtMins(a.avgFirstContactMins))}
         ${td(a.closed)}
       </tr>`
@@ -44,6 +45,7 @@ module.exports = function buildReportEmail({ from, to, agents, totals }, periodL
     ${td(totals.leadsCalled)}
     ${td(totals.leadsWhatsapped)}
     ${td(totals.followUpsDone)}
+    ${td(totals.siteVisitsDone)}
     ${td(fmtMins(totals.avgFirstContactMins))}
     ${td(totals.closed)}
   </tr>`;
@@ -57,17 +59,19 @@ module.exports = function buildReportEmail({ from, to, agents, totals }, periodL
         ${th('Leads Assigned')}
         ${th('Leads Called')}
         ${th('Leads WhatsApp’d')}
-        ${th('Follow-ups')}
+        ${th('Total Remarks')}
+        ${th('Site Visits')}
         ${th('Avg 1st Contact')}
         ${th('Closed')}
       </tr></thead>
       <tbody>
-        ${rows || `<tr>${td('No agents', 'left')}${td('')}${td('')}${td('')}${td('')}${td('')}${td('')}</tr>`}
+        ${rows || `<tr>${td('No agents', 'left')}${td('')}${td('')}${td('')}${td('')}${td('')}${td('')}${td('')}</tr>`}
         ${totalRow}
       </tbody>
     </table>
     <p style="color:#9ca3af;font-size:12px;margin-top:18px">
-      "Leads Called/WhatsApp'd" = distinct leads contacted. "Avg 1st Contact" counts only
+      "Leads Called/WhatsApp'd" = distinct leads contacted per day, summed over the range.
+      "Total Remarks" = all remarks added. "Avg 1st Contact" counts only
       working-window time (10:00 AM–6:30 PM IST). Auto-sent by PNH Lead Management System.
     </p>
   </div>`;

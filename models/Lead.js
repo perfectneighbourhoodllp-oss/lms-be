@@ -35,6 +35,14 @@ const leadSchema = new mongoose.Schema(
     qualification: { type: String, enum: QUALIFICATIONS, default: null },
     // When the qualification last changed — also the CAPI event_time source.
     qualifiedAt: { type: Date },
+    // Site-visit history — an append-only log; a lead can visit multiple times.
+    // "Visited" = siteVisits.length > 0. Persists independently of the pipeline `status`.
+    siteVisits: [{
+      at: { type: Date, default: Date.now },   // when the visit happened
+      feedback: { type: String, trim: true, default: '' },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // who logged it
+      createdAt: { type: Date, default: Date.now },
+    }],
     // Qualitative labels (e.g. 'Low Budget', 'Wants Different Config'). Multiple allowed.
     tags: { type: [{ type: String, enum: TAGS }], default: [] },
     notes: { type: String, trim: true },

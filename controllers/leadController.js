@@ -68,7 +68,7 @@ const todayRange = () => {
 exports.getLeads = async (req, res, next) => {
   try {
     const { status, source, search, assignedTo, project, page, limit, leadType, tag,
-            createdFrom, createdTo, followUpFrom, followUpTo, hasFollowUp, overdue } = req.query;
+            createdFrom, createdTo, followUpFrom, followUpTo, hasFollowUp, overdue, siteVisitDone } = req.query;
     const filter = await buildRoleFilter(req.user);
 
     if (status) filter.status = status;
@@ -79,6 +79,8 @@ exports.getLeads = async (req, res, next) => {
     // predate the leadType field (field absent), so match "not database".
     if (leadType === 'database') filter.leadType = 'database';
     else if (leadType === 'live') filter.leadType = { $ne: 'database' };
+    // Site-visit milestone — catches leads with any visit, regardless of current status.
+    if (siteVisitDone === 'true') filter['siteVisits.0'] = { $exists: true };
     // Sales users are locked to their own leads (set by buildRoleFilter).
     // Don't let them override assignedTo via query params.
     if (req.user.role !== 'sales') {
@@ -322,6 +324,8 @@ exports.updateLead = async (req, res, next) => {
 
     // Only admins may rename a lead. Strip `name` for everyone else (managers included).
     if (req.user.role !== 'admin' && allowed.name !== undefined) delete allowed.name;
+    // Site visits are append-only via POST /:id/site-visits — never via a full update.
+    if (allowed.siteVisits !== undefined) delete allowed.siteVisits;
 
     // Stamp qualifiedAt whenever the qualification actually changes.
     const qualificationChanged =
@@ -518,6 +522,36 @@ exports.getRelatedLeads = async (req, res, next) => {
 };
 
 /* ─── Remarks ─────────────────────────────────────────────── */
+
+// POST /api/leads/:id/site-visits — append a site visit to the lead's history.
+exports.addSiteVisit = async (req, res, next) => {
+  try {
+    const { at, feedback } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+    // Sales users can only log visits on their own leads.
+    if (req.user.role === 'sales' && String(lead.assignedTo) !== String(req.user.id)) {
+      return res.status(403).json({ message: 'Not authorised' });
+    }
+
+    lead.siteVisits.push({
+      at: at ? new Date(at) : new Date(),
+      feedback: (feedback || '').trim(),
+      by: req.user.id,
+    });
+    await lead.save();
+
+    const updated = await Lead.findById(lead._id)
+      .populate('assignedTo', 'name email')
+      .populate('createdBy', 'name')
+      .populate('project', 'name developer')
+      .populate('remarks.addedBy', 'name')
+      .populate('siteVisits.by', 'name');
+    res.status(201).json(updated);
+  } catch (err) {
+    next(err);
+  }
+};
 
 exports.addRemark = async (req, res, next) => {
   try {
