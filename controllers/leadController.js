@@ -568,6 +568,13 @@ exports.addRemark = async (req, res, next) => {
       return res.status(403).json({ message: 'Not authorised' });
     }
 
+    // Adding a remark counts as acceptance — stop the rotation churning a lead
+    // that's clearly being worked.
+    if (['pending', 'escalated'].includes(lead.acceptanceStatus)) {
+      lead.acceptanceStatus = 'accepted';
+      lead.acceptedAt = new Date();
+      lead.acceptDeadline = null;
+    }
     lead.remarks.push({ text: text.trim(), addedBy: req.user.id });
     await lead.save();
 
@@ -614,7 +621,7 @@ exports.addRemark = async (req, res, next) => {
 exports.logCall = async (req, res, next) => {
   try {
     const channel = req.body?.channel === 'whatsapp' ? 'whatsapp' : 'call';
-    const lead = await Lead.findById(req.params.id).select('name assignedTo').lean();
+    const lead = await Lead.findById(req.params.id).select('name assignedTo acceptanceStatus').lean();
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
 
     // Sales can only log contact on their own leads; admin/manager on any.
@@ -623,10 +630,15 @@ exports.logCall = async (req, res, next) => {
     }
 
     const now = new Date();
+    // Working the lead (logging a call/WhatsApp) counts as acceptance — clears the
+    // pending/escalated flag so the reassignment rotation stops churning it.
+    const acceptPatch = ['pending', 'escalated'].includes(lead.acceptanceStatus)
+      ? { acceptanceStatus: 'accepted', acceptedAt: now, acceptDeadline: null }
+      : {};
     await Lead.updateOne(
       { _id: lead._id },
       {
-        $set: { lastContactedAt: now },
+        $set: { lastContactedAt: now, ...acceptPatch },
         $push: { contactLog: { type: channel, at: now, by: req.user.id } },
       }
     );
@@ -704,8 +716,9 @@ exports.rejectLead = async (req, res, next) => {
       });
     }
 
-    // Explicit reject → a sole eligible agent escalates (they don't want it), no re-arm.
-    const { action } = await advancePendingLead(lead, { now: new Date(), rearmSingleAgent: false });
+    // Explicit reject → hand to the next agent in the rotation; if there's no one
+    // else, it re-arms with the same (sole) agent and an admin can reassign manually.
+    const { action } = await advancePendingLead(lead, { now: new Date() });
 
     logActivity({
       req,

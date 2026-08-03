@@ -100,6 +100,9 @@ const leadSchema = new mongoose.Schema(
     acceptDeadline: { type: Date }, // assignedAt + 15 min
     acceptedAt: { type: Date },
     reassignmentCount: { type: Number, default: 0 },
+    // How many FULL rotations passed with nobody accepting — drives the
+    // "Unaccepted after a round" flag on the lead row for admins.
+    cyclesCompleted: { type: Number, default: 0 },
     // Agents who have already been given this lead during the acceptance cycle.
     triedAgents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
 

@@ -509,6 +509,12 @@ exports.repReply = async (req, res, next) => {
     lead.wa.messages = lead.wa.messages || [];
     lead.wa.messages.push({ role: 'assistant', text: text.trim(), at: new Date() });
     lead.wa.lastOutboundAt = new Date();
+    // Replying counts as acceptance — stop the rotation churning a worked lead.
+    if (['pending', 'escalated'].includes(lead.acceptanceStatus)) {
+      lead.acceptanceStatus = 'accepted';
+      lead.acceptedAt = new Date();
+      lead.acceptDeadline = null;
+    }
     await lead.save();
     res.json({ message: 'Sent' });
   } catch (err) {
