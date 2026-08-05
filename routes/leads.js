@@ -9,6 +9,8 @@ const {
   deleteLead,
   addRemark,
   addSiteVisit,
+  updateSiteVisit,
+  deleteSiteVisit,
   getRelatedLeads,
   bulkUpload,
   bulkDelete,
@@ -52,6 +54,8 @@ router.route('/:id')
 
 router.post('/:id/remarks', addRemark);
 router.post('/:id/site-visits', addSiteVisit);
+router.put('/:id/site-visits/:visitId', updateSiteVisit);
+router.delete('/:id/site-visits/:visitId', deleteSiteVisit);
 router.post('/:id/accept', acceptLead);
 router.post('/:id/reject', rejectLead);
 router.post('/:id/log-call', logCall);

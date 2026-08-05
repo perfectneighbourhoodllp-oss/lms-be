@@ -553,6 +553,57 @@ exports.addSiteVisit = async (req, res, next) => {
   }
 };
 
+// PUT /api/leads/:id/site-visits/:visitId — edit a logged visit's date/feedback.
+exports.updateSiteVisit = async (req, res, next) => {
+  try {
+    const { at, feedback } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+    if (req.user.role === 'sales' && String(lead.assignedTo) !== String(req.user.id)) {
+      return res.status(403).json({ message: 'Not authorised' });
+    }
+    const visit = lead.siteVisits.id(req.params.visitId);
+    if (!visit) return res.status(404).json({ message: 'Site visit not found' });
+    if (at) visit.at = new Date(at);
+    if (feedback !== undefined) visit.feedback = String(feedback).trim();
+    await lead.save();
+    const updated = await Lead.findById(lead._id)
+      .populate('assignedTo', 'name email')
+      .populate('createdBy', 'name')
+      .populate('project', 'name developer')
+      .populate('remarks.addedBy', 'name')
+      .populate('siteVisits.by', 'name');
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// DELETE /api/leads/:id/site-visits/:visitId — cancel/remove a logged visit.
+exports.deleteSiteVisit = async (req, res, next) => {
+  try {
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+    if (req.user.role === 'sales' && String(lead.assignedTo) !== String(req.user.id)) {
+      return res.status(403).json({ message: 'Not authorised' });
+    }
+    if (!lead.siteVisits.id(req.params.visitId)) {
+      return res.status(404).json({ message: 'Site visit not found' });
+    }
+    lead.siteVisits.pull(req.params.visitId);
+    await lead.save();
+    const updated = await Lead.findById(lead._id)
+      .populate('assignedTo', 'name email')
+      .populate('createdBy', 'name')
+      .populate('project', 'name developer')
+      .populate('remarks.addedBy', 'name')
+      .populate('siteVisits.by', 'name');
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.addRemark = async (req, res, next) => {
   try {
     const { text } = req.body;
