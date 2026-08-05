@@ -50,7 +50,7 @@ function businessMinutesBetween(startUtc, endUtc) {
 async function computeAgentReport(start, end) {
   const range = { $gte: start, $lte: end };
 
-  const [assigned, calls, whatsapps, followups, closed, siteVisits, speedLeads, users] = await Promise.all([
+  const [assigned, calls, callsMade, whatsapps, followups, closed, siteVisits, speedLeads, users] = await Promise.all([
       Lead.aggregate([
         { $match: { assignedTo: { $ne: null }, createdAt: range } },
         { $group: { _id: '$assignedTo', n: { $sum: 1 } } },
@@ -61,6 +61,11 @@ async function computeAgentReport(start, end) {
         { $match: { action: 'lead.call', user: { $ne: null }, resourceId: { $ne: null }, createdAt: range } },
         { $group: { _id: { user: '$user', lead: '$resourceId', day: { $dateToString: { date: '$createdAt', format: '%Y-%m-%d', timezone: 'Asia/Kolkata' } } } } },
         { $group: { _id: '$_id.user', n: { $sum: 1 } } },
+      ]),
+      // Total calls made — EVERY lead.call event, not deduped by lead or day.
+      ActivityLog.aggregate([
+        { $match: { action: 'lead.call', user: { $ne: null }, resourceId: { $ne: null }, createdAt: range } },
+        { $group: { _id: '$user', n: { $sum: 1 } } },
       ]),
       // Distinct leads WhatsApp'd PER DAY, summed over the range.
       ActivityLog.aggregate([
@@ -115,6 +120,7 @@ async function computeAgentReport(start, end) {
 
     const aMap = toMap(assigned);
     const cMap = toMap(calls);
+    const cmMap = toMap(callsMade);
     const wMap = toMap(whatsapps);
     const fMap = toMap(followups);
     const clMap = toMap(closed);
@@ -130,6 +136,7 @@ async function computeAgentReport(start, end) {
         role: u.role,
         leadsAssigned: aMap[id] || 0,
         leadsCalled: cMap[id] || 0,
+        callsMade: cmMap[id] || 0,
         leadsWhatsapped: wMap[id] || 0,
         followUpsDone: fMap[id] || 0,
         siteVisitsDone: svMap[id] || 0,
@@ -144,12 +151,13 @@ async function computeAgentReport(start, end) {
       (t, r) => ({
         leadsAssigned: t.leadsAssigned + r.leadsAssigned,
         leadsCalled: t.leadsCalled + r.leadsCalled,
+        callsMade: t.callsMade + r.callsMade,
         leadsWhatsapped: t.leadsWhatsapped + r.leadsWhatsapped,
         followUpsDone: t.followUpsDone + r.followUpsDone,
         siteVisitsDone: t.siteVisitsDone + r.siteVisitsDone,
         closed: t.closed + r.closed,
       }),
-      { leadsAssigned: 0, leadsCalled: 0, leadsWhatsapped: 0, followUpsDone: 0, siteVisitsDone: 0, closed: 0 }
+      { leadsAssigned: 0, leadsCalled: 0, callsMade: 0, leadsWhatsapped: 0, followUpsDone: 0, siteVisitsDone: 0, closed: 0 }
     );
 
     // Team-wide average first-contact response.
@@ -199,6 +207,7 @@ exports.getMyReport = async (req, res, next) => {
       role: req.user.role,
       leadsAssigned: 0,
       leadsCalled: 0,
+      callsMade: 0,
       leadsWhatsapped: 0,
       followUpsDone: 0,
       siteVisitsDone: 0,
@@ -225,12 +234,13 @@ function filterReportForEmail(report, excludedIds = []) {
     (t, r) => ({
       leadsAssigned: t.leadsAssigned + r.leadsAssigned,
       leadsCalled: t.leadsCalled + r.leadsCalled,
+      callsMade: t.callsMade + r.callsMade,
       leadsWhatsapped: t.leadsWhatsapped + r.leadsWhatsapped,
       followUpsDone: t.followUpsDone + r.followUpsDone,
       siteVisitsDone: t.siteVisitsDone + r.siteVisitsDone,
       closed: t.closed + r.closed,
     }),
-    { leadsAssigned: 0, leadsCalled: 0, leadsWhatsapped: 0, followUpsDone: 0, siteVisitsDone: 0, closed: 0 }
+    { leadsAssigned: 0, leadsCalled: 0, callsMade: 0, leadsWhatsapped: 0, followUpsDone: 0, siteVisitsDone: 0, closed: 0 }
   );
 
   let spSum = 0, spCount = 0;
