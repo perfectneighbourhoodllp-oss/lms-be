@@ -479,6 +479,52 @@ exports.bulkSetLeadType = async (req, res, next) => {
   }
 };
 
+// POST /api/leads/bulk-assign — assign selected leads to one agent (admin/manager).
+// Managers can only bulk-assign leads within their own scope. A deliberate manual
+// assignment, so it's marked accepted (skips the accept/reassign cycle).
+exports.bulkAssign = async (req, res, next) => {
+  try {
+    const { ids, assignTo } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'ids must be a non-empty array of lead IDs' });
+    }
+    if (!assignTo) return res.status(400).json({ message: 'assignTo (agent id) is required' });
+
+    const agent = await User.findOne({ _id: assignTo, isActive: true }).select('_id').lean();
+    if (!agent) return res.status(400).json({ message: 'assignTo must be an active user' });
+
+    // Managers can only reassign leads they're allowed to see.
+    let match = { _id: { $in: ids } };
+    if (req.user.role === 'manager') {
+      const scope = await getManagerLeadFilter(req.user);
+      match = { $and: [{ _id: { $in: ids } }, scope] };
+    }
+
+    const result = await Lead.updateMany(match, {
+      $set: {
+        assignedTo: assignTo,
+        acceptanceStatus: 'accepted',
+        acceptedAt: new Date(),
+        acceptDeadline: null,
+      },
+    });
+    const n = result.modifiedCount ?? result.nModified ?? 0;
+
+    if (n > 0) notifyBulkAssignment(assignTo, n, req.user.id, 'bulk assign');
+
+    logActivity({
+      req,
+      action: 'lead.bulkAssign',
+      resource: 'lead',
+      details: `Bulk-assigned ${n} lead${n !== 1 ? 's' : ''}`,
+    });
+
+    res.json({ assignedCount: n });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.deleteLead = async (req, res, next) => {
   try {
     const lead = await Lead.findByIdAndDelete(req.params.id);

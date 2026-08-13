@@ -51,12 +51,13 @@ async function getManagedAgentIds(managerId) {
 
 /**
  * Unified lead-visibility filter for a manager: they see a lead if it's in one
- * of their managed projects OR assigned to someone on their team.
+ * of their managed projects OR assigned to their team OR assigned to themselves.
  *
  *   • no projects AND no team  → {}  (unscoped — sees all, current default)
- *   • only projects            → { project: { $in } }
- *   • only team                → { assignedTo: { $in } }
- *   • both                     → { $or: [ {project…}, {assignedTo…} ] }
+ *   • otherwise (scoped)       → { $or: [ {project…}, {assignedTo ∈ team+self} ] }
+ *
+ * Including the manager's OWN id means leads handed directly to a manager (e.g. a
+ * cold pool assigned to them with no project) stay visible and re-assignable by them.
  */
 async function getManagerLeadFilter(user) {
   if (!user || user.role !== 'manager') return {};
@@ -66,11 +67,17 @@ async function getManagerLeadFilter(user) {
     getManagedAgentIds(uid),
   ]);
 
-  const clauses = [];
-  if (projectIds && projectIds.length) clauses.push({ project: { $in: projectIds } });
-  if (agentIds && agentIds.length) clauses.push({ assignedTo: { $in: agentIds } });
+  const hasProjects = projectIds && projectIds.length;
+  const hasTeam = agentIds && agentIds.length;
 
-  if (!clauses.length) return {};          // unscoped
+  // Unscoped manager (no projects and no team) → sees everything (unchanged).
+  if (!hasProjects && !hasTeam) return {};
+
+  const clauses = [];
+  if (hasProjects) clauses.push({ project: { $in: projectIds } });
+  // Team's leads OR the manager's own leads.
+  clauses.push({ assignedTo: { $in: [uid, ...(agentIds || [])] } });
+
   if (clauses.length === 1) return clauses[0];
   return { $or: clauses };
 }

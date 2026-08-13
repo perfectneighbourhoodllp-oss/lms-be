@@ -15,6 +15,7 @@ const {
   bulkUpload,
   bulkDelete,
   bulkSetLeadType,
+  bulkAssign,
   getTodayFollowups,
   getOverdueLeads,
   getStats,
@@ -47,6 +48,7 @@ router.route('/').get(getLeads).post(createLead);
 router.post('/bulk', authorize('admin', 'manager'), upload.single('file'), bulkUpload);
 router.post('/bulk-delete', authorize('admin'), bulkDelete);
 router.post('/bulk-type', authorize('admin'), bulkSetLeadType);
+router.post('/bulk-assign', authorize('admin', 'manager'), bulkAssign);
 router.route('/:id')
   .get(getLead)
   .put(updateLead)
