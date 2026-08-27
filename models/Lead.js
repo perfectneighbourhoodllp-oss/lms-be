@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const SOURCES = ['Instagram', 'Ads', 'Referral', 'Walk-in', 'Website', 'WhatsApp', 'Database', 'Other'];
-const STATUSES = ['New', 'Called', 'RNR', 'Follow Up', 'Interested', 'Webinar', 'Site Visit', 'Cross Selling', 'Closed', 'Not Interested', 'Dead'];
+const STATUSES = ['New', 'Called', 'RNR', 'Follow Up', 'Interested', 'Webinar', 'Site Visit', 'Cross Selling', 'Future Prospects', 'Closed', 'Not Interested', 'Dead'];
 // Lead outcome/quality — an independent signal fed back to Meta via the
 // Conversions API (CAPI). Separate from the sales `status` pipeline on purpose.
 const QUALIFICATIONS = ['Qualified', 'Not Qualified', 'Converted'];
