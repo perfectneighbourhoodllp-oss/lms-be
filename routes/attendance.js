@@ -7,6 +7,7 @@ const {
   getToday,
   getMyAttendance,
   getAllAttendance,
+  exportAttendance,
   getOfficeConfig,
   uploadSelfie: uploadSelfieHandler,
 } = require('../controllers/attendanceController');
@@ -19,6 +20,7 @@ router.get('/today', getToday);
 router.get('/me', getMyAttendance);
 router.post('/check-in', checkIn);
 router.post('/check-out', checkOut);
+router.get('/export', authorize('admin'), exportAttendance);
 router.get('/', authorize('admin', 'manager'), getAllAttendance);
 
 module.exports = router;

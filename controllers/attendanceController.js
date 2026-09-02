@@ -203,6 +203,94 @@ exports.getAllAttendance = async (req, res, next) => {
   }
 };
 
+/* ─── CSV export ─────────────────────────────────────────── */
+
+const csvEscape = (v) => {
+  const s = v == null ? '' : String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+const toCsvRow = (arr) => arr.map(csvEscape).join(',');
+const fmtIstDT = (d) =>
+  d
+    ? new Date(d).toLocaleString('en-IN', {
+        day: '2-digit', month: 'short', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
+      })
+    : '';
+const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : '');
+
+// "Late" = checked in after 10:30 AM IST (matches the Attendance page's Late tag).
+const LATE_CUTOFF_MIN = 10 * 60 + 30;
+const isLateCheckIn = (at) => {
+  if (!at) return null;
+  const ist = new Date(new Date(at).getTime() + 5.5 * 3_600_000);
+  return ist.getUTCHours() * 60 + ist.getUTCMinutes() > LATE_CUTOFF_MIN;
+};
+
+/**
+ * GET /api/attendance/export
+ * Query: from, to (YYYY-MM-DD), userId — same filters as the list view.
+ * Admin only. Returns all matching attendance records as a CSV download.
+ */
+exports.exportAttendance = async (req, res, next) => {
+  try {
+    const { from, to, userId } = req.query;
+    const filter = {};
+    if (userId) filter.user = userId;
+    if (from || to) {
+      filter.date = {};
+      if (from) filter.date.$gte = from;
+      if (to) filter.date.$lte = to;
+    }
+
+    const records = await Attendance.find(filter)
+      .populate('user', 'name email role')
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    const header = [
+      'Name', 'Email', 'Role', 'Date', 'Work Mode',
+      'Check-in (IST)', 'Late (after 10:30)', 'Check-in Within Geofence', 'Check-in Distance (m)',
+      'Check-out (IST)', 'Check-out Within Geofence', 'Check-out Distance (m)',
+      'Hours Worked', 'Notes',
+    ];
+    const rows = [toCsvRow(header)];
+    for (const r of records) {
+      const ci = r.checkIn || {};
+      const co = r.checkOut || {};
+      let hours = '';
+      if (ci.at && co.at) {
+        const ms = new Date(co.at) - new Date(ci.at);
+        if (ms > 0) hours = (ms / 3_600_000).toFixed(2);
+      }
+      rows.push(toCsvRow([
+        r.user?.name,
+        r.user?.email,
+        r.user?.role,
+        r.date,
+        r.workMode,
+        fmtIstDT(ci.at),
+        yesNo(isLateCheckIn(ci.at)),
+        yesNo(ci.withinGeofence),
+        ci.distanceFromOffice != null ? Math.round(ci.distanceFromOffice) : '',
+        fmtIstDT(co.at),
+        yesNo(co.withinGeofence),
+        co.distanceFromOffice != null ? Math.round(co.distanceFromOffice) : '',
+        hours,
+        r.notes,
+      ]));
+    }
+
+    const csv = rows.join('\r\n');
+    const today = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="attendance-${today}.csv"`);
+    res.send('﻿' + csv); // BOM so Excel opens UTF-8 correctly
+  } catch (err) {
+    next(err);
+  }
+};
+
 /**
  * POST /api/attendance/upload-selfie
  * Multipart upload — multer-storage-cloudinary streams the file to Cloudinary
