@@ -86,6 +86,10 @@ const leadSchema = new mongoose.Schema(
     metaLeadId: { type: String, sparse: true, trim: true },
     metaAdName: { type: String, trim: true },
     metaFormId: { type: String, trim: true },
+    // Re-inquiry: a duplicate Meta lead (same phone + project) came in again.
+    // We don't create a new lead — we tag the existing one and notify the agent.
+    reInquiryCount: { type: Number, default: 0 },
+    lastReInquiryAt: { type: Date },
     // ─── Lead acceptance (15-min accept-or-reassign for auto-assigned leads) ───
     // 'not_required' — manual assignment or assigned outside business hours.
     // 'pending'      — agent must Accept before acceptDeadline, else it reassigns.

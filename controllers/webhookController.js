@@ -5,6 +5,7 @@ const WebhookLog = require('../models/WebhookLog');
 const MetaMapping = require('../models/MetaMapping');
 const notifyAssignment = require('../utils/notifyAssignment');
 const notifyUnassigned = require('../utils/notifyUnassigned');
+const notifyReInquiry = require('../utils/notifyReInquiry');
 const logActivity = require('../utils/logActivity');
 const cleanPhone = require('../utils/cleanPhone');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
@@ -272,8 +273,13 @@ const processLeadgenEvent = async (value) => {
   // 7. Duplicate check by phone + project — same phone on different projects = separate leads
   const existingByPhone = await Lead.findOne({ phone: cleanedPhone, project: projectId || null });
   if (existingByPhone) {
-    // Merge any new form answers into the existing lead's custom fields.
+    // Re-inquiry: the SAME person submitted the form again for the same project.
+    // We don't create a duplicate lead and we don't stop — we merge the new
+    // answers, TAG it as a re-inquiry, drop a timeline note, and ping the agent.
     const mergedCustomFields = { ...(existingByPhone.customFields || {}), ...fields.customFields };
+    const now = new Date();
+    const reInquiryNote = `🔁 Re-inquiry via Meta (${source})${ad_name ? ` — ad "${ad_name}"` : ' — new form submission'}`;
+
     await Lead.findByIdAndUpdate(existingByPhone._id, {
       $set: {
         metaLeadId: leadgen_id,
@@ -282,8 +288,11 @@ const processLeadgenEvent = async (value) => {
         email: fields.email || existingByPhone.email,
         source,
         customFields: mergedCustomFields,
-        lastContactedAt: new Date(),
+        lastContactedAt: now,
+        lastReInquiryAt: now,
       },
+      $inc: { reInquiryCount: 1 },
+      $push: { remarks: { text: reInquiryNote, addedBy: createdBy, createdAt: now } },
     });
 
     await WebhookLog.create({
@@ -293,7 +302,12 @@ const processLeadgenEvent = async (value) => {
       lead: existingByPhone._id,
     });
 
-    console.log(`[META] Duplicate phone ${cleanedPhone} for same project — updated lead ${existingByPhone._id}`);
+    // Notify the assigned agent (best-effort; only if the lead is assigned).
+    if (existingByPhone.assignedTo) {
+      notifyReInquiry(existingByPhone.assignedTo, { ...existingByPhone.toObject(), source });
+    }
+
+    console.log(`[META] Re-inquiry: phone ${cleanedPhone} for same project — tagged + notified on lead ${existingByPhone._id}`);
     return;
   }
 
