@@ -35,23 +35,38 @@ const buildRoleFilter = async (user) => {
 };
 
 /**
- * Safely apply a URL-supplied `project` filter, respecting the role/scope
- * already set on `filter`. If the requested project is outside the manager's
- * scope, returns `null` — caller should short-circuit to empty results.
+ * Normalise a query param that may be a single value, a comma-separated string
+ * ("a,b,c"), or an array into a clean array of trimmed, non-empty strings.
+ * Enables multi-select filters (status/project/agent/tag) while staying
+ * backward-compatible with single-value callers.
+ */
+const toList = (v) => {
+  if (v == null) return [];
+  const arr = Array.isArray(v) ? v : String(v).split(',');
+  return arr.map((s) => String(s).trim()).filter(Boolean);
+};
+
+/**
+ * Safely apply a URL-supplied `project` filter (single id, comma-separated, or
+ * array), respecting the role/scope already set on `filter`. If none of the
+ * requested projects are within the manager's scope, returns `null` — caller
+ * should short-circuit to empty results.
  *
  * @returns {object | null} mutated filter, or null if scope violation
  */
 const applyProjectQuery = (filter, requestedProject) => {
-  if (!requestedProject) return filter;
+  const list = toList(requestedProject);
+  if (!list.length) return filter;
   // If the role filter already restricts to a list of projects (manager scope),
-  // the requested project must be inside that list.
+  // keep only requested projects that fall inside that list.
   if (filter.project && Array.isArray(filter.project.$in)) {
     const scopedIds = filter.project.$in.map(String);
-    if (!scopedIds.includes(String(requestedProject))) {
-      return null; // out-of-scope → caller returns empty
-    }
+    const allowed = list.filter((p) => scopedIds.includes(String(p)));
+    if (!allowed.length) return null; // all out-of-scope → caller returns empty
+    filter.project = allowed.length === 1 ? allowed[0] : { $in: allowed };
+    return filter;
   }
-  filter.project = requestedProject;
+  filter.project = list.length === 1 ? list[0] : { $in: list };
   return filter;
 };
 
@@ -71,10 +86,13 @@ exports.getLeads = async (req, res, next) => {
             createdFrom, createdTo, followUpFrom, followUpTo, hasFollowUp, overdue, siteVisitDone } = req.query;
     const filter = await buildRoleFilter(req.user);
 
-    if (status) filter.status = status;
+    // Multi-select: status / tag accept a single value or a comma-separated list.
+    const statusList = toList(status);
+    if (statusList.length) filter.status = { $in: statusList };
     if (source) filter.source = source;
-    // Tag filter — matches leads carrying this tag (tags is an array).
-    if (tag) filter.tags = tag;
+    // Tag filter — matches leads carrying ANY of these tags (tags is an array).
+    const tagList = toList(tag);
+    if (tagList.length) filter.tags = { $in: tagList };
     // 'database' → bulk-uploaded cold data. 'live' includes legacy leads that
     // predate the leadType field (field absent), so match "not database".
     if (leadType === 'database') filter.leadType = 'database';
@@ -84,10 +102,12 @@ exports.getLeads = async (req, res, next) => {
     // Sales users are locked to their own leads (set by buildRoleFilter).
     // Don't let them override assignedTo via query params.
     if (req.user.role !== 'sales') {
-      if (assignedTo === 'unassigned') filter.assignedTo = null;
-      else if (assignedTo) filter.assignedTo = assignedTo;
+      // Multi-select agents; 'unassigned' maps to null (matches null/missing via $in).
+      const agentList = toList(assignedTo).map((v) => (v === 'unassigned' ? null : v));
+      if (agentList.length === 1) filter.assignedTo = agentList[0];
+      else if (agentList.length > 1) filter.assignedTo = { $in: agentList };
     }
-    // Apply project filter while respecting manager scope
+    // Apply project filter (single or multi) while respecting manager scope
     if (applyProjectQuery(filter, project) === null) {
       // Manager tried to filter to a project they don't manage — return empty
       const perPage = Math.min(Number(limit) || 30, 100);
@@ -1081,19 +1101,25 @@ const fmtIst = (d) => {
 exports.exportLeads = async (req, res, next) => {
   try {
     // Same filter logic as getLeads
-    const { status, source, search, assignedTo, project,
+    const { status, source, search, assignedTo, project, tag,
             createdFrom, createdTo, followUpFrom, followUpTo, hasFollowUp } = req.query;
     const filter = await buildRoleFilter(req.user);
 
-    if (status) filter.status = status;
+    // Multi-select: status / tag accept a single value or a comma-separated list.
+    const statusList = toList(status);
+    if (statusList.length) filter.status = { $in: statusList };
     if (source) filter.source = source;
+    const tagList = toList(tag);
+    if (tagList.length) filter.tags = { $in: tagList };
     // Sales users are locked to their own leads (set by buildRoleFilter).
     // Don't let them override assignedTo via query params.
     if (req.user.role !== 'sales') {
-      if (assignedTo === 'unassigned') filter.assignedTo = null;
-      else if (assignedTo) filter.assignedTo = assignedTo;
+      // Multi-select agents; 'unassigned' maps to null (matches null/missing via $in).
+      const agentList = toList(assignedTo).map((v) => (v === 'unassigned' ? null : v));
+      if (agentList.length === 1) filter.assignedTo = agentList[0];
+      else if (agentList.length > 1) filter.assignedTo = { $in: agentList };
     }
-    // Apply project filter while respecting manager scope
+    // Apply project filter (single or multi) while respecting manager scope
     if (applyProjectQuery(filter, project) === null) {
       // Manager tried to export a project they don't manage — empty CSV
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
