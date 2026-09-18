@@ -6,6 +6,7 @@ const cleanPhone = require('../utils/cleanPhone');
 const createNotification = require('../utils/createNotification');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
 const notifyUnassigned = require('../utils/notifyUnassigned');
+const notifyNewLeadAdmins = require('../utils/notifyNewLeadAdmins');
 const notifyBulkAssignment = require('../utils/notifyBulkAssignment');
 const User = require('../models/User');
 const { shouldRequireAcceptance, initialAcceptanceFields } = require('../utils/leadAcceptance');
@@ -305,6 +306,9 @@ exports.createLead = async (req, res, next) => {
       // Project exists but had no eligible agent — alert admins/managers
       notifyUnassigned(populated);
     }
+
+    // Admins get a bell notification for every new lead (skip the creator).
+    notifyNewLeadAdmins(lead, { actorId: req.user.id });
 
     // WhatsApp instant first-touch — gated inside startConversation to
     // ad-source (Ads/Instagram) live leads only. Fire-and-forget.

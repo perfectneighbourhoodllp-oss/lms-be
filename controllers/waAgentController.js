@@ -2,6 +2,7 @@ const Lead = require('../models/Lead');
 const User = require('../models/User');
 const Project = require('../models/Project');
 const createNotification = require('../utils/createNotification');
+const notifyNewLeadAdmins = require('../utils/notifyNewLeadAdmins');
 const { runAgent } = require('../services/anthropicAgent');
 const {
   isConfigured,
@@ -291,6 +292,7 @@ async function handleUnknownInbound(from, text, profileName) {
       },
     });
     await notifyRep(lead, summary, `New WhatsApp inquiry: ${lead.name}`);
+    notifyNewLeadAdmins(lead); // admins get a bell notification for every inbound lead
     console.log(`[WA] Created inbound lead ${lead._id} for ${phone}`);
   } catch (err) {
     // e.g. a race that created the same lead a moment ago — safe to skip.

@@ -6,6 +6,7 @@ const MetaMapping = require('../models/MetaMapping');
 const notifyAssignment = require('../utils/notifyAssignment');
 const notifyUnassigned = require('../utils/notifyUnassigned');
 const notifyReInquiry = require('../utils/notifyReInquiry');
+const notifyNewLeadAdmins = require('../utils/notifyNewLeadAdmins');
 const logActivity = require('../utils/logActivity');
 const cleanPhone = require('../utils/cleanPhone');
 const resolveProjectAgent = require('../utils/resolveProjectAgent');
@@ -368,6 +369,9 @@ const processLeadgenEvent = async (value) => {
       const project = projectId ? await Project.findById(projectId).select('name').lean() : null;
       notifyUnassigned({ ...lead.toObject(), project });
     }
+
+    // Admins get a bell notification for every inbound lead.
+    notifyNewLeadAdmins(lead);
 
     // CAPI: fire the initial "Lead" funnel event (Meta recommends every stage,
     // starting from the raw lead). Fire-and-forget — never blocks lead creation.

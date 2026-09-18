@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const TYPES = ['lead.assigned', 'lead.remark', 'lead.followUp', 'lead.unassigned', 'lead.waHandoff', 'lead.reInquiry'];
+const TYPES = ['lead.assigned', 'lead.remark', 'lead.followUp', 'lead.unassigned', 'lead.waHandoff', 'lead.reInquiry', 'lead.new'];
 
 const notificationSchema = new mongoose.Schema(
   {
