@@ -19,13 +19,17 @@ function cleanWaConfig(raw) {
 
 exports.getProjects = async (req, res, next) => {
   try {
-    // Scope for managers — if they have project assignments, only return those.
-    // Admins and unscoped managers see all.
+    // Scope for managers: return the projects they MANAGE or are an assigned
+    // AGENT on. The agent case matters — a manager who works a project's leads
+    // needs that project to appear so its name shows in the lead drawer, the
+    // project filter, and the Projects page (otherwise the lead reads as
+    // "No project" to them). Admins see all.
     const filter = {};
     if (req.user?.role === 'manager') {
-      const { getManagedProjectIds } = require('../utils/managerScope');
-      const ids = await getManagedProjectIds(req.user.id);
-      if (ids) filter._id = { $in: ids };
+      filter.$or = [
+        { assignedManagers: req.user.id },
+        { assignedAgents: req.user.id },
+      ];
     }
 
     const projects = await Project.find(filter)
